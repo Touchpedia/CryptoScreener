@@ -1,9 +1,11 @@
 ﻿from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-import os, time
+import asyncio, os, time
 from redis import Redis
 from rq import Queue
 import psycopg2
+
+# CCXT for dynamic top symbols
 import ccxt
 
 app = FastAPI()
@@ -20,21 +22,12 @@ REDIS_HOST = os.getenv("REDIS_HOST", "redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 RQ_QUEUE   = os.getenv("RQ_QUEUE", "ingestion-tasks")
 
-# --- Timescale/PG settings ---
+# --- Timescale/PG settings (coverage + flush) ---
 DB_HOST = os.getenv("POSTGRES_HOST", "postgres")
 DB_PORT = os.getenv("POSTGRES_PORT", "5432")
 DB_USER = os.getenv("POSTGRES_USER", "postgres")
 DB_PASS = os.getenv("POSTGRES_PASSWORD", "postgres")
 DB_NAME = os.getenv("POSTGRES_DB", "postgres")
-
-# Remember the last ingestion request (for coverage filtering)
-LAST_REQ = {
-    "symbols": [],
-    "interval": "1m",
-    "candles_per_symbol": 6000,
-    "start_ts": None,
-    "end_ts": None,
-}
 
 def tf_to_ms(tf: str) -> int:
     tf = (tf or "1m").lower()
@@ -47,15 +40,23 @@ def tf_to_ms(tf: str) -> int:
     return 60_000
 
 def get_dynamic_top_symbols(n: int) -> list[str]:
+    """
+    Pull top N USDT symbols by 24h volume from Binance via CCXT.
+    Fallback to majors list on any error.
+    """
     n = max(1, min(int(n or 1), 200))
     try:
         ex = ccxt.binance({"enableRateLimit": True})
-        tickers = ex.fetch_tickers()
+        # fetch tickers is cheapest for volume sorting
+        tickers = ex.fetch_tickers()  # dict of {symbol: ticker}
         rows = []
         for sym, t in tickers.items():
+            # we only care about USDT quote and spot (no contracts)
             if not sym.endswith("/USDT"):
                 continue
-            vol = 0.0
+            # choose the best available volume field
+            vol = None
+            # CCXT standard has 'quoteVolume' on binance
             if isinstance(t, dict):
                 vol = t.get("quoteVolume") or t.get("baseVolume") or 0
             try:
@@ -67,8 +68,10 @@ def get_dynamic_top_symbols(n: int) -> list[str]:
         symbols = [s for (s, _) in rows[:n]]
         if symbols:
             return symbols
+        # if empty (unlikely), fall through to majors
     except Exception as e:
         print(f"⚠️ CCXT top symbols failed: {e}")
+
     majors = [
         "BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT","ADA/USDT","DOGE/USDT",
         "TON/USDT","TRX/USDT","LINK/USDT","DOT/USDT","MATIC/USDT","LTC/USDT","BCH/USDT",
@@ -98,19 +101,14 @@ async def run_ingestion(request: Request):
     interval           = str(body.get("interval", "1m"))
     candles_per_symbol = int(body.get("candles_per_symbol", 6000))
 
+    # 🔹 dynamic list from exchange
     symbols = get_dynamic_top_symbols(top_symbols)
 
+    # window covering requested candles
     tf_ms   = tf_to_ms(interval)
     now_ms  = int(time.time() * 1000)
     start_ts = max(0, now_ms - (candles_per_symbol + 2) * tf_ms)
     end_ts   = now_ms
-
-    # Save for coverage filtering
-    LAST_REQ["symbols"] = symbols
-    LAST_REQ["interval"] = interval
-    LAST_REQ["candles_per_symbol"] = candles_per_symbol
-    LAST_REQ["start_ts"] = start_ts
-    LAST_REQ["end_ts"] = end_ts
 
     conn = Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
     q = Queue(RQ_QUEUE, connection=conn, default_timeout=900)
@@ -119,23 +117,15 @@ async def run_ingestion(request: Request):
         q.enqueue("workers.backfill_range_job", sym, interval, start_ts, end_ts)
 
     msg = f"Enqueued {len(symbols)} jobs on {RQ_QUEUE} (interval={interval}, candles={candles_per_symbol})"
-    print(f"▶ {msg}; window: {start_ts}->{end_ts}; symbols={symbols[:5]}...")
+    print(f"▶ {msg}; window: {start_ts}->{end_ts} tf_ms={tf_ms}; symbols[0:5]={symbols[:5]}")
     return {"message": msg, "symbols": symbols, "start_ts": start_ts, "end_ts": end_ts, "tf_ms": tf_ms}
 
 @app.get("/api/report/coverage")
 async def report_coverage():
-    """
-    Show coverage only for LAST_REQ symbols and only within LAST_REQ window.
-    Falls back to unfiltered if no LAST_REQ yet.
-    """
+    """Fetch coverage stats; auto-detect ts column."""
     tables = ["candles", "staging_candles"]
     time_cols = ["time","timestamp","open_time","ts","t_open"]
-
-    use_filter = bool(LAST_REQ.get("symbols")) and LAST_REQ.get("start_ts") and LAST_REQ.get("end_ts")
-    symbols = LAST_REQ.get("symbols", [])
-    start_ts = LAST_REQ.get("start_ts")
-    end_ts = LAST_REQ.get("end_ts")
-    total_required = int(LAST_REQ.get("candles_per_symbol") or 6000)
+    result = []
 
     for tbl in tables:
         try:
@@ -147,47 +137,32 @@ async def report_coverage():
             if not time_col:
                 raise Exception(f"No time-like column in {tbl}")
 
-            if use_filter:
-                # Only requested symbols and time window (ms → timestamptz)
-                q = f"""
-                SELECT symbol, COUNT(*) AS received, MAX({time_col}) AS latest_ts
-                FROM {tbl}
-                WHERE symbol = ANY(%s)
-                  AND {time_col} >= to_timestamp(%s/1000.0)
-                  AND {time_col} <= to_timestamp(%s/1000.0)
-                GROUP BY symbol
-                ORDER BY symbol;
-                """
-                cur.execute(q, (symbols, start_ts, end_ts))
-            else:
-                q = f"""
-                SELECT symbol, COUNT(*) AS received, MAX({time_col}) AS latest_ts
-                FROM {tbl}
-                GROUP BY symbol
-                ORDER BY symbol
-                LIMIT 300;
-                """
-                cur.execute(q)
-
+            q = f"""
+            SELECT symbol, COUNT(*) AS received, MAX({time_col}) AS latest_ts
+            FROM {tbl}
+            GROUP BY symbol
+            ORDER BY symbol
+            LIMIT 300;
+            """
+            cur.execute(q)
             rows = cur.fetchall()
             cur.close(); conn.close()
 
-            result = []
             if rows:
                 for (symbol, received, latest_ts) in rows:
                     result.append({
                         "symbol": symbol,
-                        "total_required": total_required,
-                        "received": int(received or 0),
+                        "total_required": 6000,
+                        "received": received,
                         "latest_ts": str(latest_ts) if latest_ts else "-"
                     })
-                print(f"✅ coverage from {tbl} (filtered={use_filter}) using column {time_col}")
-                return {"rows": result}
+                print(f"✅ data fetched from {tbl} using column {time_col}")
+                break
         except Exception as e:
             print(f"⚠️ table {tbl} failed: {e}")
             continue
 
-    return {"rows": []}
+    return {"rows": result}
 
 @app.post("/api/db/flush")
 async def flush_db():

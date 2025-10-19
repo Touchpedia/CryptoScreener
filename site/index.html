@@ -1,0 +1,81 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>CSB — 1m Status</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:24px;background:#0b0f14;color:#e6edf3}
+    .card{max-width:680px;background:#111827;border:1px solid #1f2937;border-radius:16px;padding:20px;box-shadow:0 4px 20px rgba(0,0,0,.25)}
+    h1{margin:0 0 12px;font-size:22px}
+    .meta{display:flex;gap:12px;flex-wrap:wrap;margin:4px 0 14px}
+    .tag{background:#0b1220;border:1px solid #233042;border-radius:999px;padding:6px 10px;font-size:12px}
+    .ok{background:#05210f;border-color:#0b5b2a;color:#8ff0a6}
+    .late{background:#2a100e;border-color:#6f1f17;color:#ffb3a8}
+    table{width:100%;border-collapse:collapse;margin-top:12px;font-size:13px}
+    th,td{padding:8px 6px;border-bottom:1px solid #1f2937;text-align:right}
+    th:first-child,td:first-child{text-align:left}
+    small{color:#9ca3af}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Ingest Status <small id="updated"></small></h1>
+    <div class="meta">
+      <span class="tag" id="ex"></span>
+      <span class="tag" id="sym"></span>
+      <span class="tag" id="tf"></span>
+      <span class="tag" id="lag" ></span>
+      <span class="tag" id="rows"></span>
+    </div>
+    <div>
+      <strong>Latest 5 candles</strong>
+      <table>
+        <thead><tr><th>TS</th><th>Open</th><th>High</th><th>Low</th><th>Close</th><th>Vol</th></tr></thead>
+        <tbody id="tbl"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <script>
+    const API_URL = "http://127.0.0.1:8000/status"; // TODO: change to your domain if hosting elsewhere
+    const fmt = n => n.toLocaleString(undefined,{maximumFractionDigits:2});
+    async function load() {
+      try {
+        const r = await fetch(API_URL, {cache:"no-store"});
+        const data = await r.json();
+        const s = data.status?.[0] || {};
+        const list = data.latest_5 || [];
+
+        document.getElementById("ex").textContent  = exch: ;
+        document.getElementById("sym").textContent = symbol: ;
+        document.getElementById("tf").textContent  = 	f: ;
+
+        const lag = Number(s.lag_seconds ?? 9999);
+        const lagEl = document.getElementById("lag");
+        lagEl.textContent = lag: s;
+        lagEl.classList.remove("ok","late");
+        lagEl.classList.add(lag <= 120 ? "ok" : "late");
+
+        document.getElementById("rows").textContent = ows_60m: ;
+        document.getElementById("updated").textContent = s.latest_ts ? () : "";
+
+        const tb = document.getElementById("tbl");
+        tb.innerHTML = "";
+        for (const r of list) {
+          const tr = document.createElement("tr");
+          tr.innerHTML = <td></td>
+                          <td></td><td></td>
+                          <td></td><td></td>
+                          <td></td>;
+          tb.appendChild(tr);
+        }
+      } catch(e) {
+        console.error(e);
+      }
+    }
+    load();
+    setInterval(load, 30000); // refresh every 30s
+  </script>
+</body>
+</html>

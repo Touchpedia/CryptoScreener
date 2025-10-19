@@ -1,0 +1,89 @@
+﻿from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+import asyncio, psycopg2, os
+
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+DB_HOST = os.getenv("POSTGRES_HOST", "postgres")
+DB_PORT = os.getenv("POSTGRES_PORT", "5432")
+DB_USER = os.getenv("POSTGRES_USER", "postgres")
+DB_PASS = os.getenv("POSTGRES_PASSWORD", "postgres")
+DB_NAME = os.getenv("POSTGRES_DB", "postgres")
+
+@app.get("/api/status")
+async def status():
+    return {"status": "ok"}
+
+@app.post("/api/ingestion/run")
+async def run_ingestion(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    top_symbols = int(body.get("top_symbols", 100))
+    interval = str(body.get("interval", "1m"))
+    candles_per_symbol = int(body.get("candles_per_symbol", 6000))
+    print(f"▶ Ingestion requested: top_symbols={top_symbols}, interval={interval}, candles_per_symbol={candles_per_symbol}")
+    await asyncio.sleep(0)
+    return {"message": f"Ingestion started for {top_symbols} symbols ({interval}, {candles_per_symbol} each)"}
+
+@app.get("/api/report/coverage")
+async def report_coverage():
+    """Try both tables and detect timestamp column automatically."""
+    tables = ["candles", "staging_candles"]
+    time_cols = ["time", "timestamp", "open_time", "ts", "t_open"]
+    result = []
+
+    for tbl in tables:
+        try:
+            conn = psycopg2.connect(
+                host=DB_HOST, port=DB_PORT,
+                user=DB_USER, password=DB_PASS, dbname=DB_NAME
+            )
+            cur = conn.cursor()
+
+            # discover columns
+            cur.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name = '{tbl}'")
+            cols = [r[0] for r in cur.fetchall()]
+            time_col = next((c for c in time_cols if c in cols), None)
+            if not time_col:
+                raise Exception(f"No time-like column found in {tbl}")
+
+            q = f"""
+            SELECT symbol,
+                   COUNT(*) AS received,
+                   MAX({time_col}) AS latest_ts
+            FROM {tbl}
+            GROUP BY symbol
+            ORDER BY symbol
+            LIMIT 100;
+            """
+            cur.execute(q)
+            rows = cur.fetchall()
+            cur.close()
+            conn.close()
+
+            if rows:
+                print(f"✅ data fetched from {tbl} using column {time_col}")
+                for r in rows:
+                    symbol, received, latest_ts = r
+                    result.append({
+                        "symbol": symbol,
+                        "total_required": 6000,
+                        "received": received,
+                        "latest_ts": str(latest_ts) if latest_ts else "-"
+                    })
+                break
+
+        except Exception as e:
+            print(f"⚠️ table {tbl} failed: {e}")
+            continue
+
+    return {"rows": result}

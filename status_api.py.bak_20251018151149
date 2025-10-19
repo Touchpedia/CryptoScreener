@@ -1,0 +1,326 @@
+﻿import datetime as dt
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+import psycopg2, os
+from psycopg2.extras import RealDictCursor
+
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173","http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["GET","POST"],
+    allow_headers=["*"],
+)
+DB = dict(
+    host=os.getenv("PGHOST","127.0.0.1"),
+    port=os.getenv("PGPORT","5433"),
+    dbname=os.getenv("PGDATABASE","csb_opt"),
+    user=os.getenv("PGUSER","postgres"),
+    password=os.getenv("PGPASSWORD","2715")
+)
+
+@app.get("/status")
+def status():
+    with psycopg2.connect(**DB, cursor_factory=RealDictCursor) as conn:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT exchange, symbol, timeframe, latest_ts, lag_seconds, rows_last_60m
+            FROM ingest_status_1m
+        """)
+        status = cur.fetchall()
+        cur.execute("""
+            SELECT ts, open, high, low, close, volume
+            FROM latest_5_candles
+            ORDER BY ts DESC LIMIT 5
+        """)
+        candles = cur.fetchall()
+    return {"status": status, "latest_5": candles}
+# CORS (allow your site; keep * while testing)
+# CORS (allow your site; keep * while testing)
+
+@app.get("/health")
+def health():
+    import psycopg2, os
+    from psycopg2.extras import RealDictCursor
+    DB = dict(
+        host=os.getenv("PGHOST","127.0.0.1"),
+        port=os.getenv("PGPORT","5433"),
+        dbname=os.getenv("PGDATABASE","csb_opt"),
+        user=os.getenv("PGUSER","postgres"),
+        password=os.getenv("PGPASSWORD","2715"),
+    )
+    with psycopg2.connect(**DB, cursor_factory=RealDictCursor) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT max(ts) AS latest FROM candles_1m WHERE symbol='BTC/USDT'")
+        latest = cur.fetchone()["latest"]
+    import time, datetime
+    if latest is None:
+        return {"ok": False, "reason": "no data"}
+    lag = int((datetime.datetime.now(datetime.timezone.utc) - latest).total_seconds())
+    return {"ok": lag <= 120, "lag_seconds": lag, "latest_ts": latest.isoformat()}
+
+
+
+import threading, time, datetime as dt
+import ccxt
+from psycopg2.extras import execute_values
+from pydantic import BaseModel, Field
+
+# ---- Backfill worker (simple, single-thread) ----
+BF_STATE = {
+    "running": False,
+    "paused": False,
+    "done": False,
+    "message": "",
+    "symbols": [],
+    "timeframe": "1m",
+    "start": None,
+    "end": None,
+    "inserted": 0,
+    "current_symbol": None,
+    "since_utc": None,
+}
+BF_LOCK = threading.Lock()
+ADMIN_KEY = os.getenv("ADMIN_KEY", "letmein")  # TODO: change in env
+
+STABLE_QUOTES = {"USDT","USDC","BUSD","FDUSD","TUSD","DAI","PYUSD","EURT","UST","USD","EUR","TRY","BRL","BIDR","NGN","RUB"}
+
+def _utc_ms(d: dt.datetime) -> int:
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=dt.timezone.utc)
+    else:
+        d = d.astimezone(dt.timezone.utc)
+    return int(d.timestamp() * 1000)
+
+def _iso_utc(ts_ms: int) -> str:
+    return dt.datetime.utcfromtimestamp(ts_ms/1000).replace(tzinfo=dt.timezone.utc).isoformat()
+
+def _upsert_batch(conn, rows):
+    sql = """
+    INSERT INTO candles_1m (ts, symbol, open, high, low, close, volume)
+    VALUES %s
+    ON CONFLICT (symbol, ts) DO UPDATE
+    SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low,
+        close=EXCLUDED.close, volume=EXCLUDED.volume;
+    """
+    execute_values(conn.cursor(), sql, rows, page_size=1000)
+    conn.commit()
+
+def _bf_loop(cfg):
+    # cfg: dict with symbols, start_ms, end_ms, timeframe
+    with BF_LOCK:
+        BF_STATE.update({
+            "running": True, "paused": False, "done": False, "message": "started",
+            "inserted": 0, "current_symbol": None, "since_utc": None
+        })
+
+    ex = getattr(ccxt, "binance")({"enableRateLimit": True})
+    with psycopg2.connect(**DB) as conn:
+        for sym in cfg["symbols"]:
+            with BF_LOCK:
+                if not BF_STATE["running"]:
+                    BF_STATE["message"] = "stopped"; return
+                BF_STATE["current_symbol"] = sym
+
+            since = cfg["start_ms"]
+            while since <= cfg["end_ms"]:
+                # Pause support
+                while True:
+                    with BF_LOCK:
+                        paused = BF_STATE["paused"]
+                        running = BF_STATE["running"]
+                    if not running:
+                        with BF_LOCK:
+                            BF_STATE["message"] = "stopped"
+                        return
+                    if not paused:
+                        break
+                    time.sleep(0.5)
+
+                try:
+                    ohlcv = ex.fetch_ohlcv(sym, cfg["timeframe"], since=since, limit=1000)
+                except Exception as e:
+                    with BF_LOCK:
+                        BF_STATE["message"] = f"error: {e}"
+                    time.sleep(1.0)
+                    continue
+
+                if not ohlcv:
+                    break
+
+                rows = [(_iso_utc(ts), sym, float(o), float(h), float(l), float(c), float(v))
+                        for (ts,o,h,l,c,v) in ohlcv]
+                _upsert_batch(conn, rows)
+                with BF_LOCK:
+                    BF_STATE["inserted"] += len(rows)
+                    BF_STATE["since_utc"] = _iso_utc(ohlcv[-1][0])
+
+                since = ohlcv[-1][0] + 60_000  # next minute
+                time.sleep(max(0.001, ex.rateLimit/1000))
+
+    with BF_LOCK:
+        BF_STATE["done"] = True
+        BF_STATE["running"] = False
+        BF_STATE["message"] = "completed"
+
+class StartBody(BaseModel):
+    start_iso: str = Field(..., description="e.g. 2025-10-01T00:00:00Z")
+    end_iso: str = Field(..., description="e.g. 2025-10-18T00:00:00Z")
+    symbols_count: int = Field(1, ge=1, le=200)
+    timeframe: str = Field("1m", pattern="^(1m)$")  # currently only 1m
+
+@app.get("/symbols")
+def symbols(limit: int = 50):
+    # Return non-stable pairs like BTC/USDT? We will EXCLUDE stable-quote pairs.
+    ex = getattr(ccxt, "binance")()
+    markets = ex.load_markets()
+    out = []
+    for m in markets.values():
+        base = m.get("base")
+        quote = m.get("quote")
+        symbol = m.get("symbol")
+        # Exclude leveraged tokens, fiat, anything with stablecoin quote
+        if not base or not quote or not symbol:
+            continue
+        if quote in STABLE_QUOTES:
+            continue
+        if any(x in base for x in ["UP","DOWN","BULL","BEAR"]):
+            continue
+        if not m.get("active", True):
+            continue
+        out.append(symbol)
+    out = sorted(set(out))[:max(1, min(limit, 200))]
+    return {"symbols": out, "count": len(out)}
+
+@app.post("/backfill/start")
+def backfill_start(body: StartBody):
+    # pick N non-stable symbols (deterministic)
+    syms = symbols(limit=body.symbols_count)["symbols"]
+    # compute window
+    start = dt.datetime.fromisoformat(body.start_iso.replace("Z","+00:00"))
+    end   = dt.datetime.fromisoformat(body.end_iso.replace("Z","+00:00"))
+    if end <= start:
+        return {"ok": False, "error": "end must be > start"}
+    cfg = {
+        "symbols": syms,
+        "timeframe": "1m",
+        "start_ms": _utc_ms(start),
+        "end_ms": _utc_ms(end),
+    }
+    with BF_LOCK:
+        if BF_STATE["running"]:
+            return {"ok": False, "error": "already running"}
+        BF_STATE.update({
+            "running": True, "paused": False, "done": False, "message": "starting",
+            "symbols": syms, "timeframe": "1m",
+            "start": body.start_iso, "end": body.end_iso, "inserted": 0,
+            "current_symbol": None, "since_utc": None
+        })
+    t = threading.Thread(target=_bf_loop, args=(cfg,), daemon=True)
+    t.start()
+    return {"ok": True, "picked_symbols": syms, "timeframe": "1m", "start": body.start_iso, "end": body.end_iso}
+
+@app.post("/backfill/pause")
+def backfill_pause():
+    with BF_LOCK:
+        if not BF_STATE["running"]:
+            return {"ok": False, "error": "not running"}
+        BF_STATE["paused"] = True
+    return {"ok": True, "paused": True}
+
+@app.post("/backfill/end")
+def backfill_end():
+    with BF_LOCK:
+        if not BF_STATE["running"]:
+            return {"ok": False, "error": "not running"}
+        BF_STATE["running"] = False
+        BF_STATE["paused"] = False
+    return {"ok": True, "stopping": True}
+
+@app.get("/backfill/status")
+def backfill_status():
+    with BF_LOCK:
+        return dict(BF_STATE)
+
+class FlushBody(BaseModel):
+    admin_key: str
+
+@app.post("/admin/flush")
+def admin_flush(body: FlushBody):
+    if body.admin_key != ADMIN_KEY:
+        return {"ok": False, "error": "unauthorized"}
+    with psycopg2.connect(**DB) as conn:
+        cur = conn.cursor()
+        cur.execute("TRUNCATE TABLE candles_1m;")
+        conn.commit()
+    return {"ok": True, "message": "candles_1m truncated"}
+
+class ReportBody(BaseModel):
+    start_iso: str = Field(..., description="e.g. 2025-10-17T00:00:00Z")
+    end_iso: str   = Field(..., description="e.g. 2025-10-18T00:00:00Z")
+    symbols: list[str] | None = None           # optional explicit symbols
+    symbols_count: int = 1                     # if symbols None -> pick N non-stable
+    timeframe: str = "1m"                      # currently '1m' only
+
+@app.post("/report")
+def report(body: ReportBody):
+    # Parse window (UTC)
+    start = dt.datetime.fromisoformat(body.start_iso.replace("Z","+00:00"))
+    end   = dt.datetime.fromisoformat(body.end_iso.replace("Z","+00:00"))
+    if end <= start:
+        return {"ok": False, "error": "end must be > start"}
+
+    # Resolve symbols
+    if body.symbols and len(body.symbols) > 0:
+        symbols_list = body.symbols
+    else:
+        symbols_list = symbols(limit=max(1, min(body.symbols_count, 200)))["symbols"]
+
+    # Required candles for 1m TF (inclusive minutes)
+    total_required = int((end - start).total_seconds() // 60) + 1
+
+    out = []
+    with psycopg2.connect(**DB) as conn:
+        cur = conn.cursor()
+        for sym in symbols_list:
+            # total received in window
+            cur.execute(
+                """
+                SELECT COUNT(*) 
+                FROM candles_1m 
+                WHERE symbol=%s AND ts >= %s AND ts <= %s
+                """,
+                (sym, start, end),
+            )
+            received = int(cur.fetchone()[0])
+
+            # current price (latest close in DB overall)
+            cur.execute(
+                """
+                SELECT close 
+                FROM candles_1m 
+                WHERE symbol=%s 
+                ORDER BY ts DESC 
+                LIMIT 1
+                """,
+                (sym,),
+            )
+            row = cur.fetchone()
+            current_price = float(row[0]) if row else None
+
+            pct = 0.0
+            if total_required > 0:
+                pct = round(min(100.0, (received / total_required) * 100.0), 2)
+
+            out.append({
+                "symbol": sym,
+                "total_required_candles": total_required,
+                "total_received_candles": received,
+                "received_percent": pct,
+                "current_price": current_price,
+            })
+
+    return {"ok": True, "start_iso": body.start_iso, "end_iso": body.end_iso, "timeframe": body.timeframe, "results": out}
+
+

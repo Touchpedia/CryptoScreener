@@ -1,4 +1,4 @@
-﻿worker command
+worker command
 
  rq worker ingestion-tasks --url redis://localhost:6379/0
 
@@ -62,9 +62,6 @@ one more thing mujhy chat ko heavy nahi kera and main koe professional developer
 Stop-Process -Name python -Force
 # ya
 taskkill /F /IM python.exe
-
-
-
 
 
 

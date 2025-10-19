@@ -1,0 +1,113 @@
+﻿from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+import asyncio, os
+from redis import Redis
+from rq import Queue
+
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Redis/RQ config (docker network hostnames) ---
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+RQ_QUEUE   = os.getenv("RQ_QUEUE", "ingestion-tasks")
+
+# Timescale/PG settings for coverage (already working via prior patch)
+import psycopg2
+DB_HOST = os.getenv("POSTGRES_HOST", "postgres")
+DB_PORT = os.getenv("POSTGRES_PORT", "5432")
+DB_USER = os.getenv("POSTGRES_USER", "postgres")
+DB_PASS = os.getenv("POSTGRES_PASSWORD", "postgres")
+DB_NAME = os.getenv("POSTGRES_DB", "postgres")
+
+@app.get("/api/status")
+async def status():
+    return {"status": "ok"}
+
+@app.post("/api/ingestion/run")
+async def run_ingestion(request: Request):
+    """
+    Enqueue jobs to RQ worker: workers.backfill_range_job(symbol, timeframe, start_ts, end_ts)
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    top_symbols = int(body.get("top_symbols", 100))
+    interval = str(body.get("interval", "1m"))
+    candles_per_symbol = int(body.get("candles_per_symbol", 6000))  # not used by job signature yet
+
+    # Majors list (stable). We limit by top_symbols param.
+    majors = [
+        "BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT","ADA/USDT","DOGE/USDT",
+        "TON/USDT","TRX/USDT","LINK/USDT","DOT/USDT","MATIC/USDT","LTC/USDT","BCH/USDT",
+        "AVAX/USDT","XLM/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","APT/USDT","NEAR/USDT",
+        "OP/USDT","ARB/USDT","TIA/USDT","INJ/USDT","SUI/USDT","SEI/USDT","FIL/USDT",
+        "AAVE/USDT","ALGO/USDT","EGLD/USDT","FTM/USDT","RON/USDT","HNT/USDT","RUNE/USDT"
+    ]
+    symbols = majors[:max(1, min(top_symbols, len(majors)))]
+
+    # RQ enqueue
+    conn = Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+    q = Queue(RQ_QUEUE, connection=conn, default_timeout=600)
+
+    enq = 0
+    for sym in symbols:
+        # workers.backfill_range_job(symbol, timeframe, start_ts, end_ts)
+        q.enqueue("workers.backfill_range_job", sym, interval, None, None)
+        enq += 1
+
+    msg = f"Enqueued {enq} jobs on {RQ_QUEUE} (interval={interval})"
+    print(f"▶ {msg}")
+    return {"message": msg, "symbols": symbols}
+
+@app.get("/api/report/coverage")
+async def report_coverage():
+    """Fetch real candle coverage stats from TimescaleDB, auto-detect ts column."""
+    tables = ["candles", "staging_candles"]
+    time_cols = ["time","timestamp","open_time","ts","t_open"]
+    result = []
+
+    for tbl in tables:
+        try:
+            conn = psycopg2.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS, dbname=DB_NAME)
+            cur = conn.cursor()
+            cur.execute(f"SELECT column_name FROM information_schema.columns WHERE table_name = %s", (tbl,))
+            cols = [r[0] for r in cur.fetchall()]
+            time_col = next((c for c in time_cols if c in cols), None)
+            if not time_col:
+                raise Exception(f"No time-like column in {tbl}")
+
+            q = f'''
+            SELECT symbol, COUNT(*) AS received, MAX({time_col}) AS latest_ts
+            FROM {tbl}
+            GROUP BY symbol
+            ORDER BY symbol
+            LIMIT 100;
+            '''
+            cur.execute(q)
+            rows = cur.fetchall()
+            cur.close(); conn.close()
+
+            if rows:
+                for (symbol, received, latest_ts) in rows:
+                    result.append({
+                        "symbol": symbol,
+                        "total_required": 6000,
+                        "received": received,
+                        "latest_ts": str(latest_ts) if latest_ts else "-"
+                    })
+                print(f"✅ data fetched from {tbl} using column {time_col}")
+                break
+        except Exception as e:
+            print(f"⚠️ table {tbl} failed: {e}")
+            continue
+
+    return {"rows": result}

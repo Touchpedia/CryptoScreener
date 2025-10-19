@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useRef, useState } from "react";
+﻿import React, { useEffect, useState } from "react";
 
 type Row = {
   symbol: string;
@@ -17,12 +17,13 @@ function normalizeInt(input: string, min: number, max: number): number {
   return Math.min(max, Math.max(min, n));
 }
 
-// UTC -> Local machine time
+// UTC -> Local machine time, safe for undefined
 function toLocal(ts?: string | null) {
   if (!ts || ts === "-") return "-";
+  // Some DBs return with "+00:00"; Date handles ISO fine.
   const d = new Date(ts);
-  if (isNaN(d.getTime())) return ts;
-  return d.toLocaleString();
+  if (isNaN(d.getTime())) return ts; // fallback if parse fails
+  return d.toLocaleString(); // local PC time
 }
 
 export default function App() {
@@ -30,36 +31,18 @@ export default function App() {
   const [topSymbols, setTopSymbols] = useState<number>(10);
   const [interval, setIntervalTf] = useState<string>("1m");
   const [candlesPerSymbol, setCandlesPerSymbol] = useState<number>(6000);
-
-  // Toggle state
-  const [ingesting, setIngesting] = useState<boolean>(false);  // controls Start/Stop UI
-  const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
-
-  // Messages / loading
+  const [starting, setStarting] = useState<boolean>(false);
   const [startMsg, setStartMsg] = useState<string>("");
-  const [loading, setLoading] = useState<boolean>(false);
 
-  // Coverage
+  // ===== Coverage Data =====
   const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
-
-  // interval ref
-  const refreshTimer = useRef<number | null>(null);
-
-  function enableAuto() {
-    if (refreshTimer.current != null) return;
-    refreshTimer.current = window.setInterval(loadCoverage, 10000);
-  }
-  function disableAuto() {
-    if (refreshTimer.current != null) {
-      window.clearInterval(refreshTimer.current);
-      refreshTimer.current = null;
-    }
-  }
 
   async function loadCoverage() {
     try {
       setLoading(true);
+      // cache-bust via query param + no-store to avoid any layer caching
       const res = await fetch(`/api/report/coverage?t=${Date.now()}`, { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
@@ -72,8 +55,9 @@ export default function App() {
     }
   }
 
-  async function startIngestionRequest() {
+  async function startIngestion() {
     try {
+      setStarting(true);
       setStartMsg("");
       const payload = {
         top_symbols: topSymbols,
@@ -91,76 +75,33 @@ export default function App() {
     } catch (err: any) {
       console.error(err);
       setStartMsg(err?.message ?? "Failed to start ingestion");
+    } finally {
+      setStarting(false);
     }
   }
 
-  // Toggle handler
-  async function toggleIngestion() {
-    if (!ingesting) {
-      // START
-      await startIngestionRequest();
-      setIngesting(true);
-      setAutoRefresh(true);
-      enableAuto();
-      // kick an immediate coverage load
-      loadCoverage();
-    } else {
-      // STOP (UI-side only; stops auto-refresh)
-      setIngesting(false);
-      setAutoRefresh(false);
-      disableAuto();
-      setStartMsg("Ingestion paused on UI; auto-refresh disabled.");
-    }
-  }
-
-  // Initial load + attach/detach timer based on autoRefresh
+  // Auto refresh coverage every 10s (lightweight)
   useEffect(() => {
     loadCoverage();
+    const id = window.setInterval(loadCoverage, 10000);
+    return () => window.clearInterval(id);
   }, []);
-  useEffect(() => {
-    if (autoRefresh) {
-      enableAuto();
-    } else {
-      disableAuto();
-    }
-    return () => disableAuto();
-  }, [autoRefresh]);
 
-  // Manual flush
+  // Flush DB button action
   async function flushDb() {
     if (!confirm("Flush all candles data?")) return;
     const res = await fetch("/api/db/flush", { method: "POST" });
     const data = await res.json().catch(() => ({}));
     alert(data?.message ?? "DB flush requested.");
+    // after flush, reload coverage to show empty state quickly
     loadCoverage();
   }
-
-  // Styles for toggle button
-  const btnStyleBase: React.CSSProperties = {
-    padding: "8px 12px",
-    borderRadius: 8,
-    border: "1px solid #d1d5db",
-    cursor: "pointer",
-    fontWeight: 600,
-  };
-  const startStyle: React.CSSProperties = {
-    ...btnStyleBase,
-    background: "#10B981", // green
-    color: "#ffffff",
-    borderColor: "#10B981",
-  };
-  const stopStyle: React.CSSProperties = {
-    ...btnStyleBase,
-    background: "#EF4444", // red
-    color: "#ffffff",
-    borderColor: "#EF4444",
-  };
 
   return (
     <div style={{ padding: 16, fontFamily: "Inter, system-ui, Arial, sans-serif" }}>
       <h2 style={{ marginBottom: 12 }}>CryptoScreener</h2>
 
-      {/* ===== Ingestion Settings ===== */}
+      {/* ===== Ingestion Settings Panel ===== */}
       <div style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: 12, marginBottom: 14 }}>
         <h3 style={{ margin: "0 0 10px 0" }}>Ingestion Settings</h3>
 
@@ -170,10 +111,10 @@ export default function App() {
               Top Symbols (count)
             </label>
             <input
-              type="number" min={1} max={200}
+              type="number" min={1} max={100}
               value={String(topSymbols)}
-              onChange={(e) => setTopSymbols(normalizeInt(e.target.value, 1, 200))}
-              onBlur={(e) => setTopSymbols(normalizeInt(e.target.value, 1, 200))}
+              onChange={(e) => setTopSymbols(normalizeInt(e.target.value, 1, 100))}
+              onBlur={(e) => setTopSymbols(normalizeInt(e.target.value, 1, 100))}
               style={{ width: "100%", padding: "6px 8px", border: "1px solid #d1d5db", borderRadius: 6 }}
             />
           </div>
@@ -211,10 +152,11 @@ export default function App() {
 
           <div>
             <button
-              onClick={toggleIngestion}
-              style={ingesting ? stopStyle : startStyle}
+              onClick={startIngestion}
+              disabled={starting}
+              style={{ padding: "8px 12px", border: "1px solid #d1d5db", borderRadius: 8, whiteSpace: "nowrap" }}
             >
-              {ingesting ? "Stop Ingestion" : "Start Ingestion"}
+              {starting ? "Starting..." : "Start Ingestion"}
             </button>
           </div>
         </div>
@@ -241,7 +183,6 @@ export default function App() {
 
           <span style={{ marginLeft: 12, fontSize: 12, color: "#6b7280" }}>
             {lastRefresh ? `Last refresh: ${lastRefresh.toLocaleTimeString()}` : ""}
-            {(!autoRefresh) ? " (auto-refresh OFF)" : ""}
           </span>
         </div>
 

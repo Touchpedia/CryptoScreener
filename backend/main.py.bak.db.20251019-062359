@@ -1,0 +1,47 @@
+﻿from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+import asyncio
+
+app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+@app.get("/api/status")
+async def status():
+    return {"status": "ok"}
+
+@app.post("/api/ingestion/run")
+async def run_ingestion(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    # Read params from UI; keep safe defaults
+    top_symbols = int(body.get("top_symbols", 100))
+    interval = str(body.get("interval", "1m"))
+    candles_per_symbol = int(body.get("candles_per_symbol", 6000))
+
+    # TODO: hook into your real ingestion job here
+    print(f"▶ Ingestion requested: top_symbols={top_symbols}, interval={interval}, candles_per_symbol={candles_per_symbol}")
+    await asyncio.sleep(0)  # non-blocking placeholder
+
+    return {
+        "message": f"Ingestion started for {top_symbols} symbols ({interval}, {candles_per_symbol} each)"
+    }
+
+@app.get("/api/report/coverage")
+async def report_coverage():
+    """
+    TEMP stub so UI isn't blank. Replace with real DB query:
+      - SELECT symbol, required, received, latest_ts FROM your tables.
+    """
+    sample = [
+        {"symbol": "BTC/USDT", "total_required": 6000, "received": 1000, "latest_ts": "2025-10-19 04:36:00"},
+        {"symbol": "ETH/USDT", "total_required": 6000, "received": 1000, "latest_ts": "2025-10-19 04:36:00"},
+    ]
+    return {"rows": sample}

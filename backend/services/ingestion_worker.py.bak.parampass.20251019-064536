@@ -1,9 +1,3 @@
-﻿# --- UI param propagation patch ---
-try:
-    top_symbols = int(os.getenv("TOP_SYMBOLS", 10))
-    print(f"⚙️  Worker respecting UI top_symbols={top_symbols}")
-except Exception:
-    top_symbols = 10
 from __future__ import annotations
 
 import asyncio
@@ -58,4 +52,3 @@ def run_ingestion_job(
     except Exception as exc:  # pragma: no cover
         logger.exception("Ingestion job failed: %s", exc)
         raise
-
