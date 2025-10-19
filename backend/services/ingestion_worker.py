@@ -46,11 +46,9 @@ def run_ingestion_job(
         # SimpleWorker me loop running nahi hota; safety ke liye check.
         try:
             loop = asyncio.get_running_loop()
-            # Agar kisi wajah se loop running ho, task schedule kar ke sync wait karein.
             loop.run_until_complete(_main())  # type: ignore[attr-defined]
         except RuntimeError:
             asyncio.run(_main())
-    except Exception as exc:  # pragma: no cover - worker should record failure
+    except Exception as exc:  # pragma: no cover
         logger.exception("Ingestion job failed: %s", exc)
-        # RQ ko propagate karte hain taake job failed mark ho
         raise

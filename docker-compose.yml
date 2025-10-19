@@ -1,15 +1,80 @@
-version: '3.8'
-
-services:
-  timescaledb:
-    image: timescale/timescaledb:2.14.2-pg15
-    container_name: timescaledb
-    restart: always
+﻿services:
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: cs_postgres
+    env_file: ./.env.compose
     environment:
-      POSTGRES_USER: trader
-      POSTGRES_PASSWORD: trader123
-      POSTGRES_DB: marketdata
-    ports:
-      - "5432:5432"
+      - POSTGRES_DB
+      - POSTGRES_USER
+      - POSTGRES_PASSWORD
+    ports: ["5432:5432"]
     volumes:
-      - ./pgdata:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7
+    container_name: cs_redis
+    ports: ["6379:6379"]
+    volumes:
+      - redis-data:/data
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cs_backend
+    env_file: ./.env.compose
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    # FIX: uvicorn main:app (na ke backend.main:app)
+    command: ["sh","-c","uvicorn main:app --host $${UVICORN_HOST:-0.0.0.0} --port $${UVICORN_PORT:-8000}"]
+    ports: ["8000:8000"]
+    volumes:
+      - ./backend:/app
+
+  worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: cs_worker
+    env_file: ./.env.compose
+    depends_on:
+      backend:
+        condition: service_started
+      redis:
+        condition: service_healthy
+    # RQ ko job import karna hoga "workers.backfill_range_job" se; file /app/workers.py pe hai -> OK
+    command: ["sh","-c","rq worker ingestion-tasks --url $${REDIS_URL}"]
+    volumes:
+      - ./backend:/app
+
+  frontend:
+    build:
+      context: ./ui
+    container_name: cs_frontend
+    env_file: ./.env.compose
+    depends_on:
+      backend:
+        condition: service_started
+    ports: ["5173:5173"]
+    volumes:
+      - ./ui:/app
+      - /app/node_modules
+
+volumes:
+  postgres-data:
+  redis-data:

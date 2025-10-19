@@ -1,0 +1,1 @@
+﻿ALTER USER postgres WITH PASSWORD '2715';

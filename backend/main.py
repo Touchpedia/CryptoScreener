@@ -1,41 +1,141 @@
-import logging
+﻿from __future__ import annotations
+import os
+from datetime import datetime, timezone, timedelta
+from typing import List, Optional
 
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel
+import psycopg2
 
-from backend.api.routes.status import router as status_router
-from backend.api.routes.ingestion import router as ingestion_router
-from backend.core.db import engine, Base
-from backend.services.ingestion_service import shutdown_ingestion_service
+# Optional Redis/RQ (safe import)
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+_redis = None
+q = None
+try:
+    from redis import Redis  # type: ignore
+    from rq import Queue     # type: ignore
+    _redis = Redis.from_url(REDIS_URL)
+    q = Queue("ingestion-tasks", connection=_redis)
+except Exception:
+    pass
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# DB
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:secret@postgres:5432/candles")
 
-app = FastAPI(title="data_pipeline API")
+def db_rows(sql: str, params: tuple):
+    rows = []
+    with psycopg2.connect(DATABASE_URL) as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            cols = [d[0] for d in cur.description]
+            for r in cur.fetchall():
+                rows.append({cols[i]: r[i] for i in range(len(cols))})
+    return rows
 
-# CORS for local Vite
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="Crypto Screener API")
 
-# Routers
-app.include_router(status_router, prefix="/api")
-app.include_router(ingestion_router, prefix="/api")
+# ---- Health/Status (always 200) ----
+@app.get("/health")
+def health():
+    return {"ok": True}
 
-# Create tables on startup
-@app.on_event("startup")
-async def on_startup():
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+@app.get("/api/status")
+def status():
+    redis_ok = False
+    try:
+        if _redis is not None:
+            _redis.ping(); redis_ok = True
+    except Exception:
+        redis_ok = False
+    return {"ok": True, "redis": redis_ok, "server_time": datetime.now(timezone.utc).isoformat()}
 
+# ---- Ingestion trigger ----
+class IngestionRequest(BaseModel):
+    symbols: List[str]
+    timeframes: List[str]
+    start_ts: Optional[int] = None
+    end_ts: Optional[int] = None
 
-@app.on_event("shutdown")
-async def on_shutdown():
-    await shutdown_ingestion_service()
+@app.post("/api/ingestion/run")
+def run_ingestion(req: IngestionRequest):
+    if not req.symbols or not req.timeframes:
+        raise HTTPException(status_code=400, detail="symbols/timeframes required")
+    if q is None:
+        return {"ok": True, "queued": False, "jobs": [], "count": 0}
+    jobs = []
+    for s in req.symbols:
+        for tf in req.timeframes:
+            j = q.enqueue("workers.backfill_range_job", s, tf, req.start_ts, req.end_ts, job_timeout=3600)
+            jobs.append(j.id)
+    return {"ok": True, "queued": True, "jobs": jobs, "count": len(jobs)}
+
+# ---- Latest candles (ensure exists) ----
+@app.get("/api/candles/latest")
+def candles_latest(
+    symbol: str = Query(..., description="e.g. BTC/USDT"),
+    timeframe: str = Query(..., description="e.g. 1m,5m,1h"),
+    limit: int = Query(5, ge=1, le=500, description="number of rows"),
+):
+    try:
+        sql = """
+        SELECT exchange, symbol, timeframe, ts, open, high, low, close, volume
+        FROM candles
+        WHERE symbol = %s AND timeframe = %s
+        ORDER BY ts DESC
+        LIMIT %s
+        """
+        rows = db_rows(sql, (symbol, timeframe, limit))
+        return {"ok": True, "rows": rows}
+    except Exception as e:
+        # keep 200 to simplify UI
+        return {"ok": False, "error": str(e)}
+
+# ---- Coverage report ----
+def get_top_usdt_symbols(limit: int = 100) -> List[str]:
+    try:
+        import ccxt  # type: ignore
+        ex = ccxt.binance({"enableRateLimit": True, "options": {"adjustForTimeDifference": True}})
+        tickers = ex.fetch_tickers()
+        items = []
+        for sym, t in tickers.items():
+            if not sym.endswith("/USDT"): continue
+            qv = t.get("quoteVolume") or 0
+            items.append((sym, qv))
+        items.sort(key=lambda x: (x[1] or 0), reverse=True)
+        return [s for s, _ in items[:limit]]
+    except Exception:
+        sql = "SELECT DISTINCT symbol FROM candles ORDER BY 1 LIMIT %s"
+        rows = db_rows(sql, (limit,))
+        return [r["symbol"] for r in rows]
+
+@app.get("/api/report/coverage")
+def coverage_report(
+    timeframe: str = Query("1m"),
+    window: int = Query(6000, ge=1, le=100000),
+    limit: int = Query(100, ge=1, le=500)
+):
+    now = datetime.now(timezone.utc)
+    start = now - timedelta(minutes=window)
+    symbols = get_top_usdt_symbols(limit)
+    results = []
+
+    with psycopg2.connect(DATABASE_URL) as conn:
+        with conn.cursor() as cur:
+            for s in symbols:
+                cur.execute(
+                    """
+                    SELECT COUNT(*)::bigint AS cnt, MAX(ts) AS latest_ts
+                    FROM candles
+                    WHERE symbol=%s AND timeframe=%s AND ts >= %s
+                    """,
+                    (s, timeframe, start)
+                )
+                cnt, latest_ts = cur.fetchone()
+                results.append({
+                    "symbol": s,
+                    "total_required_candles": window,
+                    "received_candles": int(cnt or 0),
+                    "latest_ts": latest_ts.isoformat() if latest_ts else None,
+                })
+
+    return {"ok": True, "timeframe": timeframe, "window": window, "count": len(results), "rows": results}

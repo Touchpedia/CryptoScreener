@@ -5,3 +5,7 @@ __pycache__/
 *.sqlite*
 /postgres-data/
 /redis-data/
+# database volumes (ignore everything under pgdata)
+pgdata/
+postgres-data/
+redis-data/
