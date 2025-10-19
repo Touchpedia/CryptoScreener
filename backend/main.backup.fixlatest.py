@@ -89,7 +89,7 @@ def report_coverage(
             # latest per given symbols
             sql_latest = """
                 WITH latest AS (
-                  SELECT symbol, MAX(ts) AS latest_ts
+                  SELECT symbol, (SELECT MAX(ts) FROM (SELECT ts FROM candles WHERE symbol = :symbol AND interval = :interval ORDER BY ts DESC LIMIT :n) _lastn) AS latest_ts
                   FROM candles
                   WHERE timeframe = %s AND symbol = ANY(%s)
                   GROUP BY symbol
@@ -103,7 +103,7 @@ def report_coverage(
             # top symbols by activity (row count) for timeframe
             sql_latest = """
                 WITH ranked AS (
-                  SELECT symbol, MAX(ts) AS latest_ts, COUNT(*) AS cnt
+                  SELECT symbol, (SELECT MAX(ts) FROM (SELECT ts FROM candles WHERE symbol = :symbol AND interval = :interval ORDER BY ts DESC LIMIT :n) _lastn) AS latest_ts, COUNT(*) AS cnt
                   FROM candles
                   WHERE timeframe = %s
                   GROUP BY symbol
@@ -126,10 +126,10 @@ def report_coverage(
         # count received within last "required" minutes from each symbol's latest_ts
         # Do in a single query using ANY + CASE filter
         sql_received = """
-            SELECT c.symbol, COUNT(*) AS received
+            SELECT c.symbol, (SELECT COUNT(*) FROM (SELECT ts FROM candles WHERE symbol = :symbol AND interval = :interval ORDER BY ts DESC LIMIT :n) _lastn) AS received
             FROM candles c
             JOIN (
-              SELECT symbol, MAX(ts) AS latest_ts
+              SELECT symbol, (SELECT MAX(ts) FROM (SELECT ts FROM candles WHERE symbol = :symbol AND interval = :interval ORDER BY ts DESC LIMIT :n) _lastn) AS latest_ts
               FROM candles
               WHERE timeframe = %s AND symbol = ANY(%s)
               GROUP BY symbol
@@ -160,3 +160,4 @@ def report_coverage(
     except Exception as e:
         # soft error (keep UI simple)
         return {"ok": False, "error": str(e)}
+

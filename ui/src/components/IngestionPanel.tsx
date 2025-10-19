@@ -1,4 +1,4 @@
-import { useState } from 'react'
+﻿import { useState } from 'react'
 
 type MessageState =
   | { kind: 'success'; text: string }
@@ -157,3 +157,6 @@ export default function IngestionPanel() {
     </section>
   )
 }
+
+// synced 2025-10-20 01:39:11Z
+
