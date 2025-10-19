@@ -9,6 +9,8 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [results, setResults] = useState<any>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [results, setResults] = useState<any>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   
 
   async function fetchLatest() {
@@ -86,6 +88,7 @@ function App() {
   );
 }
 export default App;
+
 
 
 
