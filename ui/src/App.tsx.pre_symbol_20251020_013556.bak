@@ -1,0 +1,298 @@
+﻿import { coverageVM } from "./viewmodel/coverageVM";
+import React, { useEffect, useRef, useState } from "react";
+
+type Row = {
+  symbol: string;
+  total_required?: number;
+  received?: number;
+  latest_ts?: string | null;
+};
+
+// number inputs sanitization (no leading zeros, clamp)
+function normalizeInt(input: string, min: number, max: number): number {
+  const digits = (input ?? "").replace(/[^\d]/g, "");
+  const noLead = digits.replace(/^0+(?=\d)/, "");
+  const chosen = noLead === "" ? "0" : noLead;
+  const n = parseInt(chosen, 10);
+  if (Number.isNaN(n)) return min;
+  return Math.min(max, Math.max(min, n));
+}
+
+// UTC -> Local machine time
+function toLocal(ts?: string | null) {
+  if (!ts || ts === "-") return "-";
+  const d = new Date(ts);
+  if (isNaN(d.getTime())) return ts;
+  return d.toLocaleString();
+}
+
+export default function App() {
+  // ===== Ingestion Settings =====
+  const [topSymbols, setTopSymbols] = useState<number>(10);
+  const [interval, setIntervalTf] = useState<string>("1m");
+  const [candlesPerSymbol, setCandlesPerSymbol] = useState<number>(6000);
+
+  // Toggle state
+  const [ingesting, setIngesting] = useState<boolean>(false);  // controls Start/Stop UI
+  const [autoRefresh, setAutoRefresh] = useState<boolean>(true);
+
+  // Messages / loading
+  const [startMsg, setStartMsg] = useState<string>("");
+  const [loading, setLoading] = useState<boolean>(false);
+
+  // Coverage
+  const [rows, setRows] = useState<Row[]>([]);
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+
+  // interval ref
+  const refreshTimer = useRef<number | null>(null);
+
+  function enableAuto() {
+    if (refreshTimer.current != null) return;
+    refreshTimer.current = window.setInterval(loadCoverage, 10000);
+  }
+  function disableAuto() {
+    if (refreshTimer.current != null) {
+      window.clearInterval(refreshTimer.current);
+      refreshTimer.current = null;
+    }
+  }
+
+  async function loadCoverage() {
+    try {
+      setLoading(true);
+      const res = await fetch(`/api/report/coverage?t=${Date.now()}`, { cache: "no-store" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setRows(Array.isArray(data) ? data : (data?.rows ?? []));
+      setLastRefresh(new Date());
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function startIngestionRequest() {
+    try {
+      setStartMsg("");
+      const payload = {
+        top_symbols: topSymbols,
+        interval: interval,
+        candles_per_symbol: candlesPerSymbol
+      };
+      const res = await fetch("/api/ingestion/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json().catch(() => ({}));
+      setStartMsg(data?.message ?? "Ingestion triggered.");
+    } catch (err: any) {
+      console.error(err);
+      setStartMsg(err?.message ?? "Failed to start ingestion");
+    }
+  }
+
+  // Toggle handler
+  async function toggleIngestion() {
+    if (!ingesting) {
+      // START
+      await startIngestionRequest();
+      setIngesting(true);
+      setAutoRefresh(true);
+      enableAuto();
+      // kick an immediate coverage load
+      loadCoverage();
+    } else {
+      // STOP (UI-side only; stops auto-refresh)
+      setIngesting(false);
+      setAutoRefresh(false);
+      disableAuto();
+      setStartMsg("Ingestion paused on UI; auto-refresh disabled.");
+    }
+  }
+
+  // Initial load + attach/detach timer based on autoRefresh
+  useEffect(() => { loadCoverage(); }, []);
+
+  useEffect(() => {
+    const unsub = coverageVM.subscribe((snap) => {
+      setRows(snap.rows as any);
+      setLastRefresh(snap.lastRefresh);
+      setLoading(snap.loading);
+    });
+    // start live updates (2s)
+    coverageVM.start(2000);
+    return () => {
+      coverageVM.stop();
+      unsub();
+    };
+  }, []);
+  useEffect(() => {
+    if (autoRefresh) {
+      enableAuto();
+    } else {
+      disableAuto();
+    }
+    return () => disableAuto();
+  }, [autoRefresh]);
+
+  // Manual flush
+  async function flushDb() {
+    if (!confirm("Flush all candles data?")) return;
+    const res = await fetch("/api/db/flush", { method: "POST" });
+    const data = await res.json().catch(() => ({}));
+    alert(data?.message ?? "DB flush requested.");
+    loadCoverage();
+  }
+
+  // Styles for toggle button
+  const btnStyleBase: React.CSSProperties = {
+    padding: "8px 12px",
+    borderRadius: 8,
+    border: "1px solid #d1d5db",
+    cursor: "pointer",
+    fontWeight: 600,
+  };
+  const startStyle: React.CSSProperties = {
+    ...btnStyleBase,
+    background: "#10B981", // green
+    color: "#ffffff",
+    borderColor: "#10B981",
+  };
+  const stopStyle: React.CSSProperties = {
+    ...btnStyleBase,
+    background: "#EF4444", // red
+    color: "#ffffff",
+    borderColor: "#EF4444",
+  };
+
+  return (
+    <div style={{ padding: 16, fontFamily: "Inter, system-ui, Arial, sans-serif" }}>
+      <h2 style={{ marginBottom: 12 }}>CryptoScreener</h2>
+
+      {/* ===== Ingestion Settings ===== */}
+      <div style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: 12, marginBottom: 14 }}>
+        <h3 style={{ margin: "0 0 10px 0" }}>Ingestion Settings</h3>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10, alignItems: "end" }}>
+          <div>
+            <label style={{ display: "block", fontSize: 12, color: "#6b7280", marginBottom: 4 }}>
+              Top Symbols (count)
+            </label>
+            <input
+              type="number" min={1} max={200}
+              value={String(topSymbols)}
+              onChange={(e) => setTopSymbols(normalizeInt(e.target.value, 1, 200))}
+              onBlur={(e) => setTopSymbols(normalizeInt(e.target.value, 1, 200))}
+              style={{ width: "100%", padding: "6px 8px", border: "1px solid #d1d5db", borderRadius: 6 }}
+            />
+          </div>
+
+          <div>
+            <label style={{ display: "block", fontSize: 12, color: "#6b7280", marginBottom: 4 }}>
+              Interval (timeframe)
+            </label>
+            <select
+              value={interval}
+              onChange={(e) => setIntervalTf(e.target.value)}
+              style={{ width: "100%", padding: "6px 8px", border: "1px solid #d1d5db", borderRadius: 6 }}
+            >
+              <option value="1m">1m</option>
+              <option value="5m">5m</option>
+              <option value="15m">15m</option>
+              <option value="1h">1h</option>
+              <option value="4h">4h</option>
+              <option value="1d">1d</option>
+            </select>
+          </div>
+
+          <div>
+            <label style={{ display: "block", fontSize: 12, color: "#6b7280", marginBottom: 4 }}>
+              Candles per Symbol
+            </label>
+            <input
+              type="number" min={1} max={100000}
+              value={String(candlesPerSymbol)}
+              onChange={(e) => setCandlesPerSymbol(normalizeInt(e.target.value, 1, 100000))}
+              onBlur={(e) => setCandlesPerSymbol(normalizeInt(e.target.value, 1, 100000))}
+              style={{ width: "100%", padding: "6px 8px", border: "1px solid #d1d5db", borderRadius: 6 }}
+            />
+          </div>
+
+          <div>
+            <button
+              onClick={toggleIngestion}
+              style={ingesting ? stopStyle : startStyle}
+            >
+              {ingesting ? "Stop Ingestion" : "Start Ingestion"}
+            </button>
+          </div>
+        </div>
+
+        {startMsg && (
+          <div style={{ marginTop: 8, fontSize: 12, color: "#374151" }}>
+            {startMsg}
+          </div>
+        )}
+      </div>
+
+      {/* ===== Flush & Coverage ===== */}
+      <div style={{ marginTop: 6 }}>
+        <div style={{ marginBottom: 8 }}>
+          <button onClick={() => coverageVM.fetchOnce()} disabled={loading}
+            style={{ padding: "6px 10px", border: "1px solid #d1d5db", borderRadius: 6 }}>
+            {loading ? "Loading..." : "Refresh"}
+          </button>
+
+          <button onClick={flushDb}
+            style={{ marginLeft: 10, padding: "6px 10px", border: "1px solid #d1d5db", borderRadius: 6 }}>
+            🔄 Flush DB
+          </button>
+
+          <span style={{ marginLeft: 12, fontSize: 12, color: "#6b7280" }}>
+            {lastRefresh ? `Last refresh: ${lastRefresh.toLocaleTimeString()}` : ""}
+            {(!autoRefresh) ? " (auto-refresh OFF)" : ""}
+          </span>
+        </div>
+
+        <h3 style={{ margin: "0 0 8px 0" }}>
+          Coverage Report — Top (USDT), {interval}, last {candlesPerSymbol}
+        </h3>
+
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 2 }}>
+            <thead>
+              <tr style={{ borderBottom: "1px solid #e5e7eb" }}>
+                <th style={{ textAlign: "left",  padding: "8px 6px"        }}>Symbol</th>
+                <th style={{ textAlign: "right", padding: "8px 6px", width: 160 }}>Total Required</th>
+                <th style={{ textAlign: "right", padding: "8px 6px", width: 110 }}>Received</th>
+                <th style={{ textAlign: "left",  padding: "8px 6px 8px 18px", width: 230 }}>Latest&nbsp;TS (local)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.symbol} style={{ borderBottom: "1px solid #f3f4f6" }}>
+                  <td style={{ padding: "8px 6px" }}>{r.symbol}</td>
+                  <td style={{ textAlign: "right", padding: "8px 6px" }}>{r.total_required ?? candlesPerSymbol}</td>
+                  <td style={{ textAlign: "right", padding: "8px 6px" }}>{r.received ?? 0}</td>
+                  <td style={{ padding: "8px 6px 8px 18px", whiteSpace: "nowrap" }}>{toLocal(r.latest_ts ?? "-")}</td>
+                </tr>
+              ))}
+              {rows.length === 0 && (
+                <tr><td colSpan={4} style={{ padding: 12, color: "#6b7280" }}>No rows. Click “Refresh”.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+
+
+

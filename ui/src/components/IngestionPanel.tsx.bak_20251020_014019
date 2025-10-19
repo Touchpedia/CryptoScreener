@@ -1,0 +1,161 @@
+﻿import { useState } from 'react'
+
+type MessageState =
+  | { kind: 'success'; text: string }
+  | { kind: 'error'; text: string }
+  | null
+
+const API_ENDPOINTS = ['/api/ingestion/run', 'http://127.0.0.1:8000/api/ingestion/run']
+
+const parseTimeframes = (value: string): string[] =>
+  value
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+
+export default function IngestionPanel() {
+  const [pairsCount, setPairsCount] = useState<number>(300)
+  const [timeframes, setTimeframes] = useState<string>('1h,4h,1d')
+  const [symbolSource, setSymbolSource] = useState<'default' | 'top'>('default')
+  const [lookbackDays, setLookbackDays] = useState<number>(365)
+  const [message, setMessage] = useState<MessageState>(null)
+  const [loading, setLoading] = useState(false)
+
+  const startIngestion = async () => {
+    if (!Number.isFinite(pairsCount) || pairsCount < 1) {
+      setMessage({ kind: 'error', text: 'Number of pairs must be at least 1.' })
+      return
+    }
+
+    const now = Date.now()
+    const startTs =
+      Number.isFinite(lookbackDays) && lookbackDays > 0
+        ? Math.floor(now - lookbackDays * 24 * 60 * 60 * 1000)
+        : null
+
+    const body = {
+      limit: pairsCount,
+      timeframes: parseTimeframes(timeframes),
+      symbol_source: symbolSource,
+      start_ts: startTs,
+      end_ts: null,
+    }
+
+    const requestInit: RequestInit = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }
+
+    const attempt = async (endpoint: string) => {
+      const response = await fetch(endpoint, requestInit)
+      const data = await response
+        .json()
+        .catch(() => ({} as Record<string, unknown>))
+
+      if (!response.ok || (typeof data.ok !== 'undefined' && data.ok !== true)) {
+        const detail =
+          (typeof data.detail === 'string' && data.detail) || 'Failed to start ingestion.'
+        throw new Error(detail)
+      }
+
+      return data as { ok?: boolean; run_id?: string; count?: number }
+    }
+
+    setLoading(true)
+    setMessage(null)
+
+    try {
+      let result: { run_id?: string; count?: number } | null = null
+
+      try {
+        result = await attempt(API_ENDPOINTS[0])
+      } catch (err) {
+        if (err instanceof TypeError) {
+          result = await attempt(API_ENDPOINTS[1])
+        } else {
+          throw err
+        }
+      }
+
+      setMessage({
+        kind: 'success',
+        text: `Started! run_id=${result?.run_id ?? 'n/a'} | count=${result?.count ?? 0}`,
+      })
+      window.dispatchEvent(new CustomEvent('ingestion:started'))
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'Unexpected error.'
+      setMessage({ kind: 'error', text: reason })
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <section className="ingestion-panel">
+      <h2>Start Ingestion</h2>
+      <div className="field">
+        <label htmlFor="pairs-count">Number of pairs</label>
+        <input
+          id="pairs-count"
+          type="number"
+          min={1}
+          value={pairsCount}
+          onChange={(event) => {
+            const next = Number.parseInt(event.target.value, 10)
+            setPairsCount(Number.isNaN(next) ? 0 : next)
+          }}
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor="lookback-days">Lookback (days)</label>
+        <input
+          id="lookback-days"
+          type="number"
+          min={1}
+          value={lookbackDays}
+          onChange={(event) => {
+            const next = Number.parseInt(event.target.value, 10)
+            setLookbackDays(Number.isNaN(next) ? 0 : next)
+          }}
+        />
+      </div>
+
+      <div className="field">
+        <label htmlFor="symbol-source">Symbol source</label>
+        <select
+          id="symbol-source"
+          value={symbolSource}
+          onChange={(event) => setSymbolSource(event.target.value as 'default' | 'top')}
+        >
+          <option value="default">Default list / manual</option>
+          <option value="top">Top by 24h volume</option>
+        </select>
+      </div>
+
+      <div className="field">
+        <label htmlFor="timeframes">Timeframes (comma-separated)</label>
+        <input
+          id="timeframes"
+          type="text"
+          value={timeframes}
+          onChange={(event) => setTimeframes(event.target.value)}
+          placeholder="1m,5m,1h,1d"
+        />
+      </div>
+
+      <button type="button" onClick={startIngestion} disabled={loading}>
+        {loading ? 'Starting...' : 'Start'}
+      </button>
+
+      {message && (
+        <p className={`message ${message.kind === 'success' ? 'success' : 'error'}`}>
+          {message.text}
+        </p>
+      )}
+    </section>
+  )
+}
+
+// synced 2025-10-20 01:39:11Z

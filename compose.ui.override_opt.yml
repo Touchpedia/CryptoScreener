@@ -1,0 +1,14 @@
+﻿version: "3.9"
+services:
+  ui:
+    build:
+      context: ./ui
+    working_dir: /app
+    volumes:
+      - ./ui:/app
+      - /app/node_modules
+    command: sh -lc "npm ci && npm run dev -- --host 0.0.0.0 --port 5173"
+    ports:
+      - "5173:5173"
+    environment:
+      - NODE_ENV=development

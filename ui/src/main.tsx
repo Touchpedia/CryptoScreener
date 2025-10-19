@@ -7,8 +7,3 @@ ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
     <App />
   </React.StrictMode>
 );
-
-// synced 2025-10-20 01:39:11Z
-
-export default function Dummy() { return <div /> }
-

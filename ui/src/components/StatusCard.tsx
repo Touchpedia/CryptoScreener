@@ -87,6 +87,3 @@ export default function StatusCard() {
     </div>
   );
 }
-
-// synced 2025-10-20 01:39:11Z
-

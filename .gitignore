@@ -9,3 +9,11 @@ __pycache__/
 pgdata/
 postgres-data/
 redis-data/
+
+# === crypto-screener added ===
+*.bak
+*.bak.*
+scripts/*.log
+scripts/*.cache
+patches/**
+

@@ -1,4 +1,4 @@
-﻿from fastapi import FastAPI, Request
+﻿from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import os, time
 from redis import Redis
@@ -6,7 +6,22 @@ from rq import Queue
 import psycopg2
 import ccxt
 
+
+
 app = FastAPI()
+# --- injected by opt patch: admin guard for /api/db/flush ---
+from fastapi import HTTPException, Request  # ensure imports
+import os
+
+@app.middleware("http")
+async def admin_guard(request: Request, call_next):
+    if request.url.path == "/api/db/flush":
+        required = os.getenv("ADMIN_TOKEN")
+        token = request.headers.get("X-Admin-Token")
+        if not required or token != required:
+            raise HTTPException(status_code=403, detail="admin token required")
+    return await call_next(request)
+# --- end injected ---
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -80,7 +95,38 @@ def get_dynamic_top_symbols(n: int) -> list[str]:
 
 @app.get("/api/status")
 async def status():
-    return {"status": "ok"}
+    info = {"status": "ok"}
+
+    # Redis check
+    try:
+        r = Redis(host=os.getenv("REDIS_HOST","redis"), port=int(os.getenv("REDIS_PORT","6379")), db=0)
+        info["redis_ok"] = bool(r.ping())
+    except Exception as e:
+        info["redis_ok"] = False
+        info["redis_error"] = str(e)
+
+    # Postgres check
+    try:
+        conn = psycopg2.connect(
+            host=os.getenv("POSTGRES_HOST","postgres"),
+            port=os.getenv("POSTGRES_PORT","5432"),
+            user=os.getenv("POSTGRES_USER","postgres"),
+            password=os.getenv("POSTGRES_PASSWORD","postgres"),
+            dbname=os.getenv("POSTGRES_DB","postgres"),
+            connect_timeout=3,
+        )
+        cur = conn.cursor()
+        cur.execute("SELECT 1;")
+        cur.fetchone()
+        cur.close(); conn.close()
+        info["db_ok"] = True
+    except Exception as e:
+        info["db_ok"] = False
+        info["db_error"] = str(e)
+
+    # Queue name for visibility
+    info["rq_queue"] = os.getenv("RQ_QUEUE", "ingestion-tasks")
+    return info
 
 @app.post("/api/ingestion/run")
 async def run_ingestion(request: Request):
@@ -198,3 +244,11 @@ async def flush_db():
     cur.close(); conn.close()
     print("✅ Database flushed")
     return {"message": "Database flushed successfully"}
+
+
+
+
+
+
+
+

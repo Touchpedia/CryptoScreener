@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 type PairProgress = {
   pair: string
@@ -31,7 +31,7 @@ const STATUS_ENDPOINTS = ['/api/status', 'http://127.0.0.1:8000/api/status']
 
 const formatPercent = (value: number | null | undefined, digits = 0) => {
   if (typeof value !== 'number' || Number.isNaN(value)) {
-    return 'â€”'
+    return '—'
   }
   const factor = 10 ** digits
   const rounded = Math.round(value * factor) / factor
@@ -40,7 +40,7 @@ const formatPercent = (value: number | null | undefined, digits = 0) => {
 
 const formatTime = (value: string | null | undefined) => {
   if (!value) {
-    return 'â€”'
+    return '—'
   }
   try {
     const date = new Date(value)
@@ -145,7 +145,7 @@ export default function StatusBoard() {
             </span>
             {runProgress.symbol && runProgress.timeframe && (
               <span>
-                {runProgress.symbol} Â· {runProgress.timeframe}
+                {runProgress.symbol} · {runProgress.timeframe}
               </span>
             )}
             {runProgress.error && <span className="status-board__run-error">{runProgress.error}</span>}
@@ -185,6 +185,3 @@ export default function StatusBoard() {
     </section>
   )
 }
-
-// synced 2025-10-20 01:39:11Z
-
