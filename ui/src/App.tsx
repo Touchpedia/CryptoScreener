@@ -7,18 +7,26 @@ function App() {
   const [symbol, setSymbol] = useState<string | null>(null);
   const [tf, setTf] = useState<string>("1m");
   const [loading, setLoading] = useState(false);
+  const [results, setResults] = useState<any>(null);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  
 
-  async function pingCoverage() {
-    setLoading(true);
-    setDiag("Checking…");
+  async function fetchLatest() {
+    setErrorMsg(null);
+    setResults(null);
+    if (!symbol) { alert('Select a Symbol first'); return; }
     try {
-      const res = await fetch("/api/report/coverage", { cache: "no-store", headers: { "x-ui-diag": "true" }});
-      if (!res.ok) throw new Error(res.status + " " + res.statusText);
+      const params = new URLSearchParams({ symbol: symbol!, timeframe: tf });
+      const res = await fetch(/api/candles/latest?, { cache: 'no-store' });
+      if (!res.ok) throw new Error(res.status + ' ' + res.statusText);
       const data = await res.json();
-      const rows = (data?.rows ?? (Array.isArray(data) ? data.length : "n/a"));
-      setDiag(`OK • rows=${rows}`);
-    } catch (e: any) { setDiag("ERR • " + (e?.message ?? "unknown")); }
-    finally { setLoading(false); }
+      // Accept either array or object; if object with rows, unwrap
+      const out = Array.isArray(data) ? data : (data?.rows ?? data);
+      setResults(out);
+    } catch (e: any) {
+      setErrorMsg(e?.message ?? 'unknown error');
+    }
+  }    finally { setLoading(false); }
   }
 
   return (
@@ -49,7 +57,7 @@ function App() {
           </div>
           <button
             className="border rounded-md px-3 py-1"
-            onClick={() => alert(`TODO: load latest candles for ${symbol ?? "?"} @ ${tf}`)}
+            onClick={fetchLatest}
             disabled={!symbol}
           >
             Load Latest Candles
@@ -58,11 +66,27 @@ function App() {
         <div className="text-sm text-gray-600">
           TODO (Phase 2): wire to <code>/api/candles/latest</code> and render mini chart; then restore Coverage/Status widgets.
         </div>
-      </div>
+      </div>        <div className=""rounded-xl border p-4 space-y-3"">
+          <h3 className=""font-semibold"">Latest Candles Result</h3>
+          {errorMsg ? (
+            <div className=""text-red-600 text-sm"">ERR • {errorMsg}</div>
+          ) : results ? (
+            <div className=""space-y-2"">
+              <div className=""text-sm"">Count: {Array.isArray(results) ? results.length : (results?.length ?? 'n/a')}</div>
+              <pre className=""text-xs overflow-auto max-h-64 border rounded-md p-2"">{JSON.stringify(
+                Array.isArray(results) ? results.slice(0, 5) : results, null, 2)}</pre>
+              <div className=""text-xs text-gray-600"">(showing up to 5 items)</div>
+            </div>
+          ) : (
+            <div className=""text-sm text-gray-600"">(no data yet)</div>
+          )}
+        </div>
+
     </div>
   );
 }
 export default App;
+
 
 
 
