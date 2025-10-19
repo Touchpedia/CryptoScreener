@@ -23,7 +23,7 @@ function App() {
 
   return (
     <div className="p-6 max-w-3xl mx-auto space-y-6">
-      <h1 className="text-2xl font-bold">CryptoScreener — UI OK</h1>
+      <h1 className="text-2xl font-bold">CryptoScreener — UI OK (phase1)</h1>
 
       <div className="rounded-xl border p-4 space-y-3">
         <h2 className="font-semibold">Diagnostics</h2>
@@ -63,3 +63,4 @@ function App() {
   );
 }
 export default App;
+
