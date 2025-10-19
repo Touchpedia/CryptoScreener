@@ -18,6 +18,7 @@ export default function IngestionPanel() {
   const [timeframes, setTimeframes] = useState<string>('1h,4h,1d')
   const [symbolSource, setSymbolSource] = useState<'default' | 'top'>('default')
   const [lookbackDays, setLookbackDays] = useState<number>(365)
+const [quote, setQuote] = useState<'USDT'|'BUSD'|'BTC'>('USDT');
   const [message, setMessage] = useState<MessageState>(null)
   const [loading, setLoading] = useState(false)
 
@@ -33,13 +34,7 @@ export default function IngestionPanel() {
         ? Math.floor(now - lookbackDays * 24 * 60 * 60 * 1000)
         : null
 
-    const body = {
-      limit: pairsCount,
-      timeframes: parseTimeframes(timeframes),
-      symbol_source: symbolSource,
-      start_ts: startTs,
-      end_ts: null,
-    }
+    const body = '{ limit: pairsCount, timeframes: parseTimeframes(timeframes), symbol_source: symbolSource, start_ts: startTs, end_ts: null, quote: quote, quote_asset: quote }'
 
     const requestInit: RequestInit = {
       method: 'POST',
@@ -132,7 +127,15 @@ export default function IngestionPanel() {
           <option value="default">Default list / manual</option>
           <option value="top">Top by 24h volume</option>
         </select>
+      </div>      <div className=""field"">
+        <label htmlFor=""quote-asset"">Quote Asset</label>
+        <select id=""quote-asset"" value={quote} onChange={(e)=>setQuote(e.target.value as 'USDT'|'BUSD'|'BTC')}>
+          <option value=""USDT"">USDT</option>
+          <option value=""BUSD"">BUSD</option>
+          <option value=""BTC"">BTC</option>
+        </select>
       </div>
+
 
       <div className="field">
         <label htmlFor="timeframes">Timeframes (comma-separated)</label>
@@ -159,4 +162,5 @@ export default function IngestionPanel() {
 }
 
 // synced 2025-10-20 01:39:11Z
+
 
