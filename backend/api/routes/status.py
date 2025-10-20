@@ -1,4 +1,11 @@
-﻿import redis
+﻿
+try:
+try:
+    import redis  # optional
+except Exception:  # module missing or import error
+    redis = None # optional
+except Exception:  # module missing or import error
+    redis = None
 from ...core.config import get_settings
 from sqlalchemy import text
 from fastapi import APIRouter, Depends
@@ -41,12 +48,20 @@ async def health(session: AsyncSession = Depends(get_session)):
         db_ok = False
         db_error = str(exc)
 
-    try:
-        r = redis.from_url(get_settings().REDIS_URL)
-        r.ping()
-    except Exception as exc:
+    if redis is None:
         redis_ok = False
-        redis_error = str(exc)
+        redis_error = "redis library not installed"
+    else:
+        if redis is None:
+        redis_ok = False
+        redis_error = "redis library not installed"
+    else:
+        try:
+            r = redis.from_url(get_settings().REDIS_URL)
+            r.ping()
+        except Exception as exc:
+            redis_ok = False
+            redis_error = str(exc)
 
     overall = "ok" if (db_ok and redis_ok) else ("degraded" if (db_ok or redis_ok) else "down")
     return {
@@ -55,3 +70,5 @@ async def health(session: AsyncSession = Depends(get_session)):
         "db": {"ok": db_ok, "error": db_error},
         "redis": {"ok": redis_ok, "error": redis_error},
     }
+
+

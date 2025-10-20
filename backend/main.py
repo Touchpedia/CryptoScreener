@@ -199,4 +199,15 @@ async def flush_db():
     print("✅ Database flushed")
     return {"message": "Database flushed successfully"}
 
+@app.post("/api/report/coverage")
+async def report_coverage_post(request: Request):
+    """
+    POST wrapper: delegates to existing GET /api/report/coverage.
+    Body { "symbols": [...], "timeframes": [...] } is accepted (ignored by current GET impl).
+    """
+    try:
+        _ = await request.json()
+    except Exception:
+        pass
+    return await report_coverage()
 
