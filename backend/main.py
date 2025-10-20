@@ -199,15 +199,19 @@ async def flush_db():
     print("✅ Database flushed")
     return {"message": "Database flushed successfully"}
 
-@app.post("/api/report/coverage")
-async def report_coverage_post(request: Request):
+@app.post("/api/ingestion/stop")
+async def stop_ingestion(request: Request):
     """
-    POST wrapper: delegates to existing GET /api/report/coverage.
-    Body { "symbols": [...], "timeframes": [...] } is accepted (ignored by current GET impl).
+    Gracefully stop ongoing ingestion by clearing Redis queue.
     """
+    import redis
+    from rq import Queue
     try:
-        _ = await request.json()
-    except Exception:
-        pass
-    return await report_coverage()
-
+        r = redis.Redis(host=os.getenv("REDIS_HOST", "redis"), port=int(os.getenv("REDIS_PORT", 6379)), db=0)
+        q = Queue("ingestion-tasks", connection=r)
+        # Empty queue
+        for job_id in q.job_ids:
+            q.remove(job_id)
+        return {"message": f"Stopped all pending jobs ({len(q.job_ids)} remaining after cleanup)"}
+    except Exception as e:
+        return {"error": str(e)}
