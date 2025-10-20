@@ -1,6 +1,7 @@
-from pydantic_settings import BaseSettings, SettingsConfigDict
+﻿from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
+    admin_token: str | None = None
     # direct URLs (preferred)
     database_url: str | None = None
     redis_url: str | None = None
@@ -60,3 +61,5 @@ def get_settings() -> Settings:
     if _settings is None:
         _settings = Settings()
     return _settings
+
+

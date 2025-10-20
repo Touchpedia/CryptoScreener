@@ -198,3 +198,5 @@ async def flush_db():
     cur.close(); conn.close()
     print("✅ Database flushed")
     return {"message": "Database flushed successfully"}
+
+
