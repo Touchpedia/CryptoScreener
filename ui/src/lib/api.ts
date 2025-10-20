@@ -21,3 +21,11 @@ export async function fetchStatus() {
   if (!res.ok) throw new Error(`status ${res.status}`);
   return res.json();
 }
+export async function fetchHealth() {
+  try {
+    const r = await fetch("/api/status");
+    return await r.json();
+  } catch (e) {
+    return { status: "error", error: e };
+  }
+}
