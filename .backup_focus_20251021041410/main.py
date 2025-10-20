@@ -219,8 +219,3 @@ app.include_router(ingestion_control_router)
 from api.routers.ws_ingestion import router as ws_router
 app.include_router(ws_router)
 
-
-from api.routers.report import router as report_router
-from api.routers.admin_control import router as admin_router
-app.include_router(report_router)
-app.include_router(admin_router)
