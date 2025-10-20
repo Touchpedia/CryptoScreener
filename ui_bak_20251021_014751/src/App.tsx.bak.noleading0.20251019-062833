@@ -1,0 +1,182 @@
+﻿import React, { useEffect, useState } from "react";
+
+type Row = {
+  symbol: string;
+  total_required?: number;
+  received?: number;
+  latest_ts?: string | null;
+};
+
+export default function App() {
+  // ===== Ingestion Settings =====
+  const [topSymbols, setTopSymbols] = useState<number>(10);
+  const [interval, setIntervalTf] = useState<string>("1m");
+  const [candlesPerSymbol, setCandlesPerSymbol] = useState<number>(6000);
+  const [starting, setStarting] = useState<boolean>(false);
+  const [startMsg, setStartMsg] = useState<string>("");
+
+  // ===== Coverage Data =====
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
+
+  async function loadCoverage() {
+    try {
+      setLoading(true);
+      const res = await fetch("/api/report/coverage");
+      if (!res.ok) {
+        throw new Error(HTTP );
+      }
+      const data = await res.json();
+      setRows(Array.isArray(data) ? data : (data?.rows ?? []));
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function startIngestion() {
+    try {
+      setStarting(true);
+      setStartMsg("");
+      const payload = {
+        top_symbols: Number.isFinite(topSymbols) ? topSymbols : 10,
+        interval: interval,
+        candles_per_symbol: Number.isFinite(candlesPerSymbol) ? candlesPerSymbol : 6000
+      };
+      const res = await fetch("/api/ingestion/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) {
+        throw new Error(HTTP );
+      }
+      const data = await res.json().catch(() => ({}));
+      setStartMsg(data?.message ?? "Ingestion triggered.");
+    } catch (err: any) {
+      console.error(err);
+      setStartMsg(err?.message ?? "Failed to start ingestion");
+    } finally {
+      setStarting(false);
+    }
+  }
+
+  // Auto refresh coverage every 10s (lightweight)
+  useEffect(() => {
+    loadCoverage();
+    const id = window.setInterval(loadCoverage, 10000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  return (
+    <div style={{ padding: 16, fontFamily: "Inter, system-ui, Arial, sans-serif" }}>
+      <h2 style={{ marginBottom: 12 }}>CryptoScreener</h2>
+
+      {/* ===== Ingestion Settings Panel ===== */}
+      <div style={{
+        border: "1px solid #e5e7eb", borderRadius: 10, padding: 12, marginBottom: 14
+      }}>
+        <h3 style={{ margin: "0 0 10px 0" }}>Ingestion Settings</h3>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10, alignItems: "end" }}>
+          <div>
+            <label style={{ display: "block", fontSize: 12, color: "#6b7280", marginBottom: 4 }}>
+              Top Symbols (count)
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={100}
+              value={topSymbols}
+              onChange={(e) => setTopSymbols(Number(e.target.value.replace(/^0+(?=\d)/, "")))}
+              style={{ width: "100%", padding: "6px 8px", border: "1px solid #d1d5db", borderRadius: 6 }}
+            />
+          </div>
+
+          <div>
+            <label style={{ display: "block", fontSize: 12, color: "#6b7280", marginBottom: 4 }}>
+              Interval (timeframe)
+            </label>
+            <select
+              value={interval}
+              onChange={(e) => setIntervalTf(e.target.value)}
+              style={{ width: "100%", padding: "6px 8px", border: "1px solid #d1d5db", borderRadius: 6 }}
+            >
+              <option value="1m">1m</option>
+              <option value="5m">5m</option>
+              <option value="15m">15m</option>
+              <option value="1h">1h</option>
+              <option value="4h">4h</option>
+              <option value="1d">1d</option>
+            </select>
+          </div>
+
+          <div>
+            <label style={{ display: "block", fontSize: 12, color: "#6b7280", marginBottom: 4 }}>
+              Candles per Symbol
+            </label>
+            <input
+              type="number"
+              min={1}
+              max={100000}
+              value={candlesPerSymbol}
+              onChange={(e) => setCandlesPerSymbol(Number(e.target.value.replace(/^0+(?=\d)/, "")))}
+              style={{ width: "100%", padding: "6px 8px", border: "1px solid #d1d5db", borderRadius: 6 }}
+            />
+          </div>
+
+          <div>
+            <button
+              onClick={startIngestion}
+              disabled={starting}
+              style={{ padding: "8px 12px", border: "1px solid #d1d5db", borderRadius: 8, whiteSpace: "nowrap" }}
+            >
+              {starting ? "Starting..." : "Start Ingestion"}
+            </button>
+          </div>
+        </div>
+
+        {startMsg && (
+          <div style={{ marginTop: 8, fontSize: 12, color: "#374151" }}>
+            {startMsg}
+          </div>
+        )}
+      </div>
+
+      {/* ===== Coverage Table ===== */}
+      <div style={{ marginTop: 6, overflowX: "auto" }}>
+        <h3 style={{ margin: "0 0 8px 0" }}>Coverage Report — Top (USDT), {interval}, last {candlesPerSymbol}</h3>
+        <button onClick={loadCoverage} disabled={loading}
+          style={{ padding: "6px 10px", border: "1px solid #d1d5db", borderRadius: 6 }}>
+          {loading ? "Loading..." : "Refresh"}
+        </button>
+
+        <table style={{ width: "100%", borderCollapse: "collapse", marginTop: 10 }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid #e5e7eb" }}>
+              <th style={{ textAlign: "left",  padding: "8px 6px"        }}>Symbol</th>
+              <th style={{ textAlign: "right", padding: "8px 6px", width: 160 }}>Total Required</th>
+              <th style={{ textAlign: "right", padding: "8px 6px", width: 110 }}>Received</th>
+              <th style={{ textAlign: "left",  padding: "8px 6px 8px 18px", width: 210 }}>Latest&nbsp;TS</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.symbol} style={{ borderBottom: "1px solid #f3f4f6" }}>
+                <td style={{ padding: "8px 6px" }}>{r.symbol}</td>
+                <td style={{ textAlign: "right", padding: "8px 6px" }}>{r.total_required ?? candlesPerSymbol}</td>
+                <td style={{ textAlign: "right", padding: "8px 6px" }}>{r.received ?? 0}</td>
+                <td style={{ padding: "8px 6px 8px 18px", whiteSpace: "nowrap" }}>{r.latest_ts ?? "-"}</td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr><td colSpan={4} style={{ padding: 12, color: "#6b7280" }}>Click “Refresh” or wait for auto-update.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+

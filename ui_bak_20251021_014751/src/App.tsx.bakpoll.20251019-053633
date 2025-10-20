@@ -1,0 +1,65 @@
+﻿import React, { useState, useEffect } from "react";
+
+type Row = {
+  symbol: string;
+  total_required?: number;
+  received?: number;
+  latest_ts?: string | null;
+};
+
+export default function App() {
+  const [rows, setRows] = useState<Row[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  async function loadCoverage() {
+    try {
+      setLoading(true);
+      const res = await fetch("/api/report/coverage");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setRows(Array.isArray(data) ? data : (data?.rows ?? []));
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div style={{ padding: 16 }}>
+      <h2 style={{ marginBottom: 10 }}>Coverage Report</h2>
+      <button onClick={loadCoverage} disabled={loading}
+        style={{ padding: "6px 12px", border: "1px solid #d1d5db", borderRadius: 6 }}>
+        {loading ? "Loading..." : "Refresh"}
+      </button>
+
+      <div style={{ marginTop: 14, overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ borderBottom: "1px solid #e5e7eb" }}>
+              <th style={{ textAlign: "left", padding: "8px 6px" }}>Symbol</th>
+              <th style={{ textAlign: "right", padding: "8px 6px", width: 140 }}>Total Required (6000)</th>
+              <th style={{ textAlign: "right", padding: "8px 6px", width: 110 }}>Received</th>
+              <th style={{ textAlign: "left", padding: "8px 6px 8px 18px", width: 210 }}>Latest&nbsp;TS</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.symbol} style={{ borderBottom: "1px solid #f3f4f6" }}>
+                <td style={{ padding: "8px 6px" }}>{r.symbol}</td>
+                <td style={{ textAlign: "right", padding: "8px 6px" }}>{r.total_required ?? 6000}</td>
+                <td style={{ textAlign: "right", padding: "8px 6px" }}>{r.received ?? 0}</td>
+                <td style={{ padding: "8px 6px 8px 18px", whiteSpace: "nowrap" }}>{r.latest_ts ?? "-"}</td>
+              </tr>
+            ))}
+            {rows.length === 0 && (
+              <tr><td colSpan={4} style={{ padding: 12, color: "#6b7280" }}>Click “Refresh” to load data.</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+
