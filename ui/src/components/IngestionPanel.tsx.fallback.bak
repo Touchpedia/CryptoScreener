@@ -17,16 +17,9 @@ export default function IngestionPanel() {
         end_ts: null
       };
       const res = await runIngestion(payload);
-      // some builds return {message,...} only; try to pick run_id from status if missing
-      let rid = (res && (res.run_id || res.runId)) ?? null;
-      if (!rid) {
-        const s = await getStatus();
-        rid = s?.run?.run_id ?? null;
-      }
-      setRunId(rid);
-      const msg = res?.message || (rid ? \Run started: \\ : 'Ingestion started');
-      const pairs = Array.isArray(res?.symbols) ? \ (\ pairs)\ : '';
-      setMessage(msg + pairs);
+      // Expecting: { ok: true, job_id, run_id, count }
+      setRunId(res.run_id || null);
+      setMessage(res?.run_id ? \Run started: \ (pairs: \ )\ : 'Ingestion started');
     } catch (e:any) {
       setMessage(\Failed: \\);
     }
@@ -37,11 +30,12 @@ export default function IngestionPanel() {
     const t = setInterval(async () => {
       try {
         const s = await getStatus();
+        // if backend surfaces latest run snapshot under s.run
         if (s?.run?.run_id === runId) {
           const pctRaw = Number(s.run.percent ?? 0);
           setPercent(Number.isFinite(pctRaw) ? pctRaw : 0);
         }
-      } catch {}
+      } catch { /* ignore poll errors */ }
     }, 1500);
     return () => clearInterval(t);
   }, [runId]);
@@ -49,9 +43,21 @@ export default function IngestionPanel() {
   return (
     <div className="p-4 border rounded-xl space-y-3">
       <div className="flex gap-2">
-        <input className="border p-2 flex-1" value={symbols} onChange={e => setSymbols(e.target.value)} placeholder="BTC/USDT,ETH/USDT" />
-        <input className="border p-2 w-40" value={timeframes} onChange={e => setTimeframes(e.target.value)} placeholder="1m,5m" />
-        <button className="px-4 py-2 rounded-lg border" onClick={handleStart}>Start Ingestion</button>
+        <input
+          className="border p-2 flex-1"
+          value={symbols}
+          onChange={e => setSymbols(e.target.value)}
+          placeholder="BTC/USDT,ETH/USDT"
+        />
+        <input
+          className="border p-2 w-40"
+          value={timeframes}
+          onChange={e => setTimeframes(e.target.value)}
+          placeholder="1m,5m"
+        />
+        <button className="px-4 py-2 rounded-lg border" onClick={handleStart}>
+          Start Ingestion
+        </button>
       </div>
       {message && <div className="text-sm">{message}</div>}
       {runId && <div className="text-sm">Run: <span className="font-mono">{runId}</span> — Progress: {percent}%</div>}

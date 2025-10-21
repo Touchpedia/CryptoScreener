@@ -1,8 +1,6 @@
 ﻿import os, json
 from fastapi import APIRouter
 import redis
-from rq import Queue
-from redis import Redis
 
 REDIS_HOST = os.getenv("REDIS_HOST", "cs_redis")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
@@ -21,16 +19,6 @@ def _set(val: bool) -> None:
     _r.set(KEY, "1" if val else "0")
     _r.publish(CHAN, json.dumps({"running": val}))
 
-def _purge_queue() -> int:
-    try:
-        r = Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
-        q = Queue("ingestion-tasks", connection=r)
-        n = q.count
-        q.empty()
-        return n
-    except Exception:
-        return -1
-
 @router.get("/status")
 async def status():
     return {"ok": True, "running": _get()}
@@ -45,13 +33,6 @@ async def start():
 @router.post("/stop")
 async def stop():
     if not _get():
-        purged = _purge_queue()
-        return {"ok": True, "running": False, "msg": "already stopped", "purged": purged}
+        return {"ok": True, "running": False, "msg": "already stopped"}
     _set(False)
-    purged = _purge_queue()
-    return {"ok": True, "running": False, "purged": purged}
-
-@router.post("/purge")
-async def purge():
-    purged = _purge_queue()
-    return {"ok": True, "purged": purged}
+    return {"ok": True, "running": False}

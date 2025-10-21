@@ -124,18 +124,70 @@ async def run_ingestion(request: Request):
 
 @app.get("/api/report/coverage")
 async def report_coverage():
-    import os, psycopg2
-    DB_HOST = os.getenv("POSTGRES_HOST", "postgres")
-    DB_PORT = os.getenv("POSTGRES_PORT", "5432")
-    DB_USER = os.getenv("POSTGRES_USER", "postgres")
-    DB_PASS = os.getenv("POSTGRES_PASSWORD", "secret")
-    DB_NAME = os.getenv("POSTGRES_DB", "candles")
-    conn = psycopg2.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS, dbname=DB_NAME)
-    cur = conn.cursor()
-    cur.execute("SELECT symbol, COUNT(*) AS received, MAX(ts) AS latest_ts FROM candles GROUP BY symbol ORDER BY symbol LIMIT 300;")
-    rows = cur.fetchall()
-    cur.close(); conn.close()
-    return {"rows": [{"symbol": s, "total_required": 6000, "received": int(r or 0), "latest_ts": str(t) if t else "-"} for (s, r, t) in rows]}
+    """
+    Show coverage only for LAST_REQ symbols and only within LAST_REQ window.
+    Falls back to unfiltered if no LAST_REQ yet.
+    """
+    tables = ["candles", "staging_candles"]
+    time_cols = ["time","timestamp","open_time","ts","t_open"]
+
+    use_filter = bool(LAST_REQ.get("symbols")) and LAST_REQ.get("start_ts") and LAST_REQ.get("end_ts")
+    symbols = LAST_REQ.get("symbols", [])
+    start_ts = LAST_REQ.get("start_ts")
+    end_ts = LAST_REQ.get("end_ts")
+    total_required = int(LAST_REQ.get("candles_per_symbol") or 6000)
+
+    for tbl in tables:
+        try:
+            conn = psycopg2.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS, dbname=DB_NAME)
+            cur = conn.cursor()
+            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s", (tbl,))
+            cols = [r[0] for r in cur.fetchall()]
+            time_col = next((c for c in time_cols if c in cols), None)
+            if not time_col:
+                raise Exception(f"No time-like column in {tbl}")
+
+            if use_filter:
+                # Only requested symbols and time window (ms → timestamptz)
+                q = f"""
+                SELECT symbol, COUNT(*) AS received, MAX({time_col}) AS latest_ts
+                FROM {tbl}
+                WHERE symbol = ANY(%s)
+                  AND {time_col} >= to_timestamp(%s/1000.0)
+                  AND {time_col} <= to_timestamp(%s/1000.0)
+                GROUP BY symbol
+                ORDER BY symbol;
+                """
+                cur.execute(q, (symbols, start_ts, end_ts))
+            else:
+                q = f"""
+                SELECT symbol, COUNT(*) AS received, MAX({time_col}) AS latest_ts
+                FROM {tbl}
+                GROUP BY symbol
+                ORDER BY symbol
+                LIMIT 300;
+                """
+                cur.execute(q)
+
+            rows = cur.fetchall()
+            cur.close(); conn.close()
+
+            result = []
+            if rows:
+                for (symbol, received, latest_ts) in rows:
+                    result.append({
+                        "symbol": symbol,
+                        "total_required": total_required,
+                        "received": int(received or 0),
+                        "latest_ts": str(latest_ts) if latest_ts else "-"
+                    })
+                print(f"✅ coverage from {tbl} (filtered={use_filter}) using column {time_col}")
+                return {"rows": result}
+        except Exception as e:
+            print(f"⚠️ table {tbl} failed: {e}")
+            continue
+
+    return {"rows": []}
 
 @app.post("/api/db/flush")
 async def flush_db():
@@ -172,5 +224,3 @@ from api.routers.report import router as report_router
 from api.routers.admin_control import router as admin_router
 app.include_router(report_router)
 app.include_router(admin_router)
-
-

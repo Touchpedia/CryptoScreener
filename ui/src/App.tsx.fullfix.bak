@@ -1,6 +1,6 @@
 ﻿import { useState, useEffect } from "react";
 
-type CoverageRow = { symbol: string; total_required?: number; received?: number; latest_ts?: string | number };
+type CoverageRow = { symbol:string; total_required?:number; received?:number; latest_ts?:number };
 
 export default function App() {
   const [topSymbols, setTopSymbols] = useState(10);
@@ -12,23 +12,15 @@ export default function App() {
   const [starting, setStarting] = useState(false);
   const [msg, setMsg] = useState<string>("");
 
-  async function checkStatus() {
-    try {
-      const r = await fetch("/api/ingestion/status");
-      const j = await r.json();
-      setIngesting(j?.running === true);
-    } catch {
-      // keep current state if status fails
-    }
-  }
-
   async function startIngestion() {
     try {
       setStarting(true);
-      // 1) mark running
-      await fetch("/api/ingestion/start", { method: "POST" });
-      // 2) enqueue jobs
-      const body = { top_symbols: topSymbols, interval, candles_per_symbol: candlesPerSymbol };
+      const body = {
+        symbols: ["BTC/USDT", "ETH/USDT"],
+        timeframes: [interval],
+        start_ts: null,
+        end_ts: null,
+      };
       const r = await fetch("/api/ingestion/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -36,9 +28,9 @@ export default function App() {
       });
       const j = await r.json().catch(() => ({}));
       setMsg(j?.message ? String(j.message) : "Ingestion started");
-      // 3) verify status & refresh
-      setTimeout(() => { checkStatus(); loadCoverage(); }, 800);
-    } catch (e: any) {
+      setIngesting(true);
+      setTimeout(loadCoverage, 1500);
+    } catch (e:any) {
       setMsg(e?.message || "Failed to start ingestion");
     } finally {
       setStarting(false);
@@ -49,9 +41,8 @@ export default function App() {
     try {
       setStarting(true);
       await fetch("/api/ingestion/stop", { method: "POST" });
-      // also try purge (safe no-op if not present)
-      fetch("/api/ingestion/purge", { method: "POST" }).catch(()=>{});
-      setTimeout(() => { checkStatus(); loadCoverage(); }, 800);
+      setIngesting(false);
+      setMsg("Ingestion stop requested");
     } catch {
       setMsg("Failed to stop ingestion");
     } finally {
@@ -59,6 +50,7 @@ export default function App() {
     }
   }
 
+  // ✅ Re-add Flush DB helper
   async function flushDB() {
     try {
       const r = await fetch("/api/db/flush", { method: "POST" });
@@ -75,11 +67,10 @@ export default function App() {
   async function loadCoverage() {
     try {
       setLoading(true);
-      const url = `/api/report/coverage?timeframe=${interval}&window=${candlesPerSymbol}&limit=${topSymbols}&t=${Date.now()}`;
+      const url = \/api/report/coverage?timeframe=\&window=\&limit=\&t=\\;
       const r = await fetch(url);
       const j = await r.json();
-      const data = Array.isArray(j) ? j : (j?.rows ?? []);
-      setRows(data);
+      setRows(Array.isArray(j) ? j : j?.rows ?? []);
     } catch {
       setRows([]);
     } finally {
@@ -88,9 +79,10 @@ export default function App() {
   }
 
   useEffect(() => {
-    checkStatus();
     loadCoverage();
-    const id = setInterval(() => { checkStatus(); loadCoverage(); }, 2000);
+    const id = setInterval(() => {
+      loadCoverage();
+    }, 10000);
     return () => clearInterval(id);
   }, [interval, candlesPerSymbol, topSymbols]);
 
@@ -110,7 +102,7 @@ export default function App() {
           <div>
             <label>Top Symbols</label>
             <input type="number" value={topSymbols} onChange={(e) => setTopSymbols(+e.target.value)}
-              style={{ width: "100%", border: "1px solid #ccc", borderRadius: 6, padding: 6 }} />
+              style={{ width: "100%", border: "1px solid #ccc", borderRadius: 6, padding: 6 }}/>
           </div>
           <div>
             <label>Interval</label>
@@ -124,13 +116,13 @@ export default function App() {
           <div>
             <label>Candles per Symbol</label>
             <input type="number" value={candlesPerSymbol} onChange={(e) => setCandlesPerSymbol(+e.target.value)}
-              style={{ width: "100%", border: "1px solid #ccc", borderRadius: 6, padding: 6 }} />
+              style={{ width: "100%", border: "1px solid #ccc", borderRadius: 6, padding: 6 }}/>
           </div>
           <button
             onClick={async () => { if (ingesting) { await stopIngestion(); } else { await startIngestion(); } }}
-            style={{ background: starting ? "#facc15" : (ingesting ? "#ef4444" : "#22c55e"), color: "#fff", padding: "8px 14px", borderRadius: 8, border: "none" }}
+            style={{ background: starting ? "#facc15" : ingesting ? "#ef4444" : "#22c55e", color: "#fff", padding: "8px 14px", borderRadius: 8, border: "none" }}
           >
-            {starting ? "Working..." : (ingesting ? "Stop Ingestion" : "Start Ingestion")}
+            {starting ? "Starting..." : ingesting ? "Stop Ingestion" : "Start Ingestion"}
           </button>
         </div>
       </div>
@@ -144,6 +136,7 @@ export default function App() {
           style={{ background:"#ef4444", color:"#fff", padding:"8px 14px", borderRadius:8, border:"none" }}>
           Stop Ingestion
         </button>
+        {/* ✅ Flush DB button restored */}
         <button onClick={flushDB}
           style={{ background: "#0ea5e9", color: "white", padding: "8px 14px", borderRadius: 8, border: "none" }}>
           🗑 Flush DB
@@ -166,7 +159,7 @@ export default function App() {
               <td align="right" style={{ padding: 6 }}>{r.total_required ?? candlesPerSymbol}</td>
               <td align="right" style={{ padding: 6 }}>{r.received ?? 0}</td>
               <td style={{ padding: 6 }}>
-                {r.latest_ts ? new Date(r.latest_ts as any).toLocaleString([], { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }) : "-"}
+                {r.latest_ts ? new Date(r.latest_ts).toLocaleString([], { timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone }) : "-"}
               </td>
             </tr>
           ))}
@@ -175,4 +168,3 @@ export default function App() {
     </div>
   );
 }
-

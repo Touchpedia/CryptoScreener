@@ -75,7 +75,7 @@ export default function App() {
   async function loadCoverage() {
     try {
       setLoading(true);
-      const url = `/api/report/coverage?timeframe=${interval}&window=${candlesPerSymbol}&limit=${topSymbols}&t=${Date.now()}`;
+      const url = \/api/report/coverage?timeframe=\&window=\&limit=\&t=\\;
       const r = await fetch(url);
       const j = await r.json();
       const data = Array.isArray(j) ? j : (j?.rows ?? []);
@@ -175,4 +175,3 @@ export default function App() {
     </div>
   );
 }
-

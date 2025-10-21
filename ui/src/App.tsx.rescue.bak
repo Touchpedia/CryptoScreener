@@ -1,0 +1,50 @@
+﻿import { useState, useEffect } from "react";
+
+type CoverageRow = { symbol:string; total_required?:number; received?:number; latest_ts?:number };
+
+export default function App() {
+  const [topSymbols, setTopSymbols] = useState(10);
+  const [interval, setIntervalTf] = useState("1m");
+  const [candlesPerSymbol, setCandlesPerSymbol] = useState(6000);
+  const [rows, setRows] = useState<CoverageRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [ingesting, setIngesting] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [msg, setMsg] = useState<string>("");
+
+  // NEW: read real backend ingestion status
+  async function checkStatus() {
+    try {
+      const r = await fetch("/api/ingestion/status");
+      const j = await r.json().catch(() => ({}));
+      setIngesting(j?.running === true);
+    } catch {
+      // if status endpoint fails, don't flip current UI state
+    }
+  }
+
+  async function startIngestion() {
+  try {
+    setStarting(true);
+    // 1) mark running (Redis flag)
+    await fetch("/api/ingestion/start", { method: "POST" });
+    // 2) enqueue jobs
+    const body = { top_symbols: topSymbols, interval, candles_per_symbol: candlesPerSymbol };
+    const r = await fetch("/api/ingestion/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await r.json().catch(() => ({}));
+    setMsg(j?.message ? String(j.message) : "Ingestion started");
+    // 3) verify backend status then refresh table
+    await new Promise(res => setTimeout(res, 800));
+    await checkStatus();
+    setTimeout(loadCoverage, 800);
+  } catch (e) {
+    setMsg((e && e.message) ? e.message : "Failed to start ingestion");
+  } finally {
+    setStarting(false);
+  }
+}
+
