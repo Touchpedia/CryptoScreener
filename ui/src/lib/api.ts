@@ -1,240 +1,38 @@
-﻿export type IngestionPayload = {
+export type IngestionTaskPayload = {
+  timeframe: string;
+  candles_per_symbol?: number;
+  start_iso?: string;
+  end_iso?: string;
+};
+
+export type IngestionPayload = {
   symbols: string[];
-  timeframes: string[];
-  start_ts: number | null;
-  end_ts: number | null;
+  tasks: IngestionTaskPayload[];
 };
 
 async function asJson(res: Response) {
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(\HTTP \ \ \from fastapi import FastAPI, Request
-from fastapi.middleware.cors import CORSMiddleware
-import os, time
-from redis import Redis
-from rq import Queue
-import psycopg2
-import ccxt
-
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# --- Redis/RQ config ---
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
-REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
-RQ_QUEUE   = os.getenv("RQ_QUEUE", "ingestion-tasks")
-
-# --- Timescale/PG settings ---
-DB_HOST = os.getenv("POSTGRES_HOST", "postgres")
-DB_PORT = os.getenv("POSTGRES_PORT", "5432")
-DB_USER = os.getenv("POSTGRES_USER", "postgres")
-DB_PASS = os.getenv("POSTGRES_PASSWORD", "postgres")
-DB_NAME = os.getenv("POSTGRES_DB", "postgres")
-
-# Remember the last ingestion request (for coverage filtering)
-LAST_REQ = {
-    "symbols": [],
-    "interval": "1m",
-    "candles_per_symbol": 6000,
-    "start_ts": None,
-    "end_ts": None,
-}
-
-def tf_to_ms(tf: str) -> int:
-    tf = (tf or "1m").lower()
-    if tf.endswith("m"):
-        return int(tf[:-1]) * 60_000
-    if tf.endswith("h"):
-        return int(tf[:-1]) * 60 * 60_000
-    if tf.endswith("d"):
-        return int(tf[:-1]) * 24 * 60 * 60_000
-    return 60_000
-
-def get_dynamic_top_symbols(n: int) -> list[str]:
-    n = max(1, min(int(n or 1), 200))
-    try:
-        ex = ccxt.binance({"enableRateLimit": True})
-        tickers = ex.fetch_tickers()
-        rows = []
-        for sym, t in tickers.items():
-            if not sym.endswith("/USDT"):
-                continue
-            vol = 0.0
-            if isinstance(t, dict):
-                vol = t.get("quoteVolume") or t.get("baseVolume") or 0
-            try:
-                vol = float(vol)
-            except Exception:
-                vol = 0.0
-            rows.append((sym, vol))
-        rows.sort(key=lambda x: x[1], reverse=True)
-        symbols = [s for (s, _) in rows[:n]]
-        if symbols:
-            return symbols
-    except Exception as e:
-        print(f"⚠️ CCXT top symbols failed: {e}")
-    majors = [
-        "BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT","ADA/USDT","DOGE/USDT",
-        "TON/USDT","TRX/USDT","LINK/USDT","DOT/USDT","MATIC/USDT","LTC/USDT","BCH/USDT",
-        "AVAX/USDT","XLM/USDT","UNI/USDT","ATOM/USDT","ETC/USDT","APT/USDT","NEAR/USDT",
-        "OP/USDT","ARB/USDT","TIA/USDT","INJ/USDT","SUI/USDT","SEI/USDT","FIL/USDT",
-        "AAVE/USDT","ALGO/USDT","EGLD/USDT","FTM/USDT","RON/USDT","HNT/USDT","RUNE/USDT"
-    ]
-    return majors[:n]
-
-@app.get("/api/status")
-async def status():
-    return {"status": "ok"}
-
-@app.post("/api/ingestion/run")
-async def run_ingestion(request: Request):
-    """
-    Enqueue jobs with explicit window:
-      workers.backfill_range_job(symbol, timeframe, start_ts, end_ts)
-    start_ts/end_ts are ms since epoch UTC.
-    """
-    try:
-        body = await request.json()
-    except Exception:
-        body = {}
-
-    top_symbols        = int(body.get("top_symbols", 100))
-    interval           = str(body.get("interval", "1m"))
-    candles_per_symbol = int(body.get("candles_per_symbol", 6000))
-
-    symbols = get_dynamic_top_symbols(top_symbols)
-
-    tf_ms   = tf_to_ms(interval)
-    now_ms  = int(time.time() * 1000)
-    start_ts = max(0, now_ms - (candles_per_symbol + 2) * tf_ms)
-    end_ts   = now_ms
-
-    # Save for coverage filtering
-    LAST_REQ["symbols"] = symbols
-    LAST_REQ["interval"] = interval
-    LAST_REQ["candles_per_symbol"] = candles_per_symbol
-    LAST_REQ["start_ts"] = start_ts
-    LAST_REQ["end_ts"] = end_ts
-
-    conn = Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-    q = Queue(RQ_QUEUE, connection=conn, default_timeout=900)
-
-    for sym in symbols:
-        q.enqueue("workers.backfill_range_job", sym, interval, start_ts, end_ts)
-
-    msg = f"Enqueued {len(symbols)} jobs on {RQ_QUEUE} (interval={interval}, candles={candles_per_symbol})"
-    print(f"▶ {msg}; window: {start_ts}->{end_ts}; symbols={symbols[:5]}...")
-    return {"message": msg, "symbols": symbols, "start_ts": start_ts, "end_ts": end_ts, "tf_ms": tf_ms}
-
-@app.get("/api/report/coverage")
-async def report_coverage():
-    """
-    Show coverage only for LAST_REQ symbols and only within LAST_REQ window.
-    Falls back to unfiltered if no LAST_REQ yet.
-    """
-    tables = ["candles", "staging_candles"]
-    time_cols = ["time","timestamp","open_time","ts","t_open"]
-
-    use_filter = bool(LAST_REQ.get("symbols")) and LAST_REQ.get("start_ts") and LAST_REQ.get("end_ts")
-    symbols = LAST_REQ.get("symbols", [])
-    start_ts = LAST_REQ.get("start_ts")
-    end_ts = LAST_REQ.get("end_ts")
-    total_required = int(LAST_REQ.get("candles_per_symbol") or 6000)
-
-    for tbl in tables:
-        try:
-            conn = psycopg2.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS, dbname=DB_NAME)
-            cur = conn.cursor()
-            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s", (tbl,))
-            cols = [r[0] for r in cur.fetchall()]
-            time_col = next((c for c in time_cols if c in cols), None)
-            if not time_col:
-                raise Exception(f"No time-like column in {tbl}")
-
-            if use_filter:
-                # Only requested symbols and time window (ms → timestamptz)
-                q = f"""
-                SELECT symbol, COUNT(*) AS received, MAX({time_col}) AS latest_ts
-                FROM {tbl}
-                WHERE symbol = ANY(%s)
-                  AND {time_col} >= to_timestamp(%s/1000.0)
-                  AND {time_col} <= to_timestamp(%s/1000.0)
-                GROUP BY symbol
-                ORDER BY symbol;
-                """
-                cur.execute(q, (symbols, start_ts, end_ts))
-            else:
-                q = f"""
-                SELECT symbol, COUNT(*) AS received, MAX({time_col}) AS latest_ts
-                FROM {tbl}
-                GROUP BY symbol
-                ORDER BY symbol
-                LIMIT 300;
-                """
-                cur.execute(q)
-
-            rows = cur.fetchall()
-            cur.close(); conn.close()
-
-            result = []
-            if rows:
-                for (symbol, received, latest_ts) in rows:
-                    result.append({
-                        "symbol": symbol,
-                        "total_required": total_required,
-                        "received": int(received or 0),
-                        "latest_ts": str(latest_ts) if latest_ts else "-"
-                    })
-                print(f"✅ coverage from {tbl} (filtered={use_filter}) using column {time_col}")
-                return {"rows": result}
-        except Exception as e:
-            print(f"⚠️ table {tbl} failed: {e}")
-            continue
-
-    return {"rows": []}
-
-@app.post("/api/db/flush")
-async def flush_db():
-    conn = psycopg2.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS, dbname=DB_NAME)
-    cur = conn.cursor()
-    cur.execute("TRUNCATE TABLE staging_candles, candles RESTART IDENTITY CASCADE;")
-    conn.commit()
-    cur.close(); conn.close()
-    print("✅ Database flushed")
-    return {"message": "Database flushed successfully"}
-
-@app.post("/api/report/coverage")
-async def report_coverage_post(request: Request):
-    """
-    POST wrapper: delegates to existing GET /api/report/coverage.
-    Body { "symbols": [...], "timeframes": [...] } is accepted (ignored by current GET impl).
-    """
-    try:
-        _ = await request.json()
-    except Exception:
-        pass
-    return await report_coverage()
-\.trim());
+    throw new Error(`HTTP ${res.status}: ${text}`);
   }
   return res.json();
 }
 
 export async function runIngestion(payload: IngestionPayload): Promise<any> {
-  const res = await fetch('/api/ingestion/run', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+  const res = await fetch("/api/ingestion/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  return asJson(res); // expects: { ok: true, job_id, run_id, count }
+  return asJson(res);
 }
 
 export async function getStatus(): Promise<any> {
-  const res = await fetch('/api/status', { method: 'GET' });
+  const res = await fetch("/api/status", { method: "GET" });
+  return asJson(res);
+}
+
+export async function flushDatabase(): Promise<any> {
+  const res = await fetch("/api/db/flush", { method: "POST" });
   return asJson(res);
 }

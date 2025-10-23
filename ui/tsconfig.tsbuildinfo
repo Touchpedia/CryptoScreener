@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/global.d.ts","./src/main.tsx","./src/components/ingestionpanel.tsx","./src/components/statusboard.tsx","./src/components/statuscard.tsx","./src/lib/api.ts"],"version":"5.9.3"}

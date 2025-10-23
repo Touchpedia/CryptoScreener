@@ -1,4 +1,3 @@
 export default function StatusCard() {
-  return null;
+    return null;
 }
-

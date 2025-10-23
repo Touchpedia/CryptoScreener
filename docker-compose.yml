@@ -50,7 +50,6 @@
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: cs_worker
     env_file: ./.env.compose
     depends_on:
       backend:

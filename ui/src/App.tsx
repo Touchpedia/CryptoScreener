@@ -34,6 +34,24 @@ const SYMBOL_SEGMENTS: { label: string; value: string }[] = [
   { label: "24h Losers", value: "losers" },
 ];
 
+type TaskConfig = {
+  id: string;
+  timeframe: string;
+  candles: string;
+  enabled: boolean;
+  useCustomRange: boolean;
+  start: string;
+  end: string;
+};
+
+const TIMEFRAME_OPTIONS = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"];
+
+const DEFAULT_TASKS: TaskConfig[] = [
+  { id: "task-1m", timeframe: "1m", candles: "6000", enabled: true, useCustomRange: false, start: "", end: "" },
+  { id: "task-5m", timeframe: "5m", candles: "2880", enabled: true, useCustomRange: false, start: "", end: "" },
+  { id: "task-1h", timeframe: "1h", candles: "720", enabled: false, useCustomRange: false, start: "", end: "" },
+];
+
 type FetchOptions = { force?: boolean };
 
 export default function App() {
@@ -48,6 +66,7 @@ export default function App() {
   const [symbolSearch, setSymbolSearch] = useState<string>("");
   const [symbolFilterLimit, setSymbolFilterLimit] = useState<number | null>(null);
   const [customLimit, setCustomLimit] = useState<string>("");
+  const [taskConfigs, setTaskConfigs] = useState<TaskConfig[]>(DEFAULT_TASKS);
 
   const [loading, setLoading] = useState<boolean>(false);
   const [ingesting, setIngesting] = useState<boolean>(false);
@@ -236,17 +255,72 @@ export default function App() {
     }
   };
 
-  async function startIngestion() {
-    const cps = parsePositiveInt(candlesPerSymbol);
-    const activeSymbols = selectedSymbols.filter((sym) => availableSymbols.includes(sym));
+  const updateTask = (id: string, patch: Partial<TaskConfig>) => {
+    setTaskConfigs((prev) => prev.map((task) => (task.id === id ? { ...task, ...patch } : task)));
+  };
 
-    if (!Number.isInteger(cps) || cps <= 0) {
-      alert("Please enter a valid positive number for Candles per Symbol.");
+  const addTask = () => {
+    const newTask: TaskConfig = {
+      id: `task-${Date.now()}`,
+      timeframe: "15m",
+      candles: "480",
+      enabled: true,
+      useCustomRange: false,
+      start: "",
+      end: "",
+    };
+    setTaskConfigs((prev) => [...prev, newTask]);
+  };
+
+  const removeTask = (id: string) => {
+    setTaskConfigs((prev) => prev.filter((task) => task.id !== id));
+  };
+
+  const toIsoString = (value: string) => {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toISOString();
+  };
+
+  async function startIngestion() {
+    const activeSymbols = selectedSymbols.filter((sym) => availableSymbols.includes(sym));
+    if (!activeSymbols.length) {
+      alert("Please select at least one symbol.");
       return;
     }
 
-    if (!activeSymbols.length) {
-      alert("Please select at least one symbol.");
+    let taskPayload: Record<string, unknown>[];
+    try {
+      taskPayload = taskConfigs
+        .filter((task) => task.enabled)
+        .map((task) => {
+          const useRange = task.useCustomRange;
+          const base: Record<string, unknown> = { timeframe: task.timeframe };
+          if (useRange) {
+            const startIso = toIsoString(task.start);
+            const endIso = toIsoString(task.end);
+            if (!startIso || !endIso) {
+              throw new Error("Please provide valid start and end times for enabled custom ranges.");
+            }
+            base.start_iso = startIso;
+            base.end_iso = endIso;
+          } else {
+            const candlesInt = parsePositiveInt(task.candles);
+            if (!Number.isInteger(candlesInt) || candlesInt <= 0) {
+              throw new Error("Please enter a valid positive number of candles for each enabled timeframe.");
+            }
+            base.candles_per_symbol = candlesInt;
+          }
+          return base;
+        });
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "Invalid timeframe task configuration.");
+      return;
+    }
+
+    if (!taskPayload.length) {
+      alert("Please enable at least one timeframe task.");
       return;
     }
 
@@ -256,8 +330,8 @@ export default function App() {
     try {
       const body: Record<string, unknown> = {
         interval,
-        candles_per_symbol: cps,
         symbols: activeSymbols,
+        tasks: taskPayload,
       };
       const response = await fetch("/api/ingestion/run", {
         method: "POST",
@@ -525,9 +599,9 @@ export default function App() {
                 </button>
               </div>
             </div>
-          </div>
+        </div>
 
-          <div style={{ display: "flex", gap: 12, alignItems: "stretch", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "stretch", flexWrap: "wrap" }}>
             <select
               multiple
               value={selectedSymbols}
@@ -618,6 +692,170 @@ export default function App() {
                 <span style={{ fontSize: 12, color: "#ef4444" }}>No symbols available</span>
               )}
             </div>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h4 style={{ margin: 0 }}>Timeframe Tasks</h4>
+              <button
+                type="button"
+                onClick={addTask}
+                style={{
+                  border: "1px solid #d1d5db",
+                  borderRadius: 6,
+                  padding: "6px 12px",
+                  background: "#f8fafc",
+                  cursor: "pointer",
+                }}
+              >
+                + Add Timeframe
+              </button>
+            </div>
+
+            {taskConfigs.map((task) => (
+              <div
+                key={task.id}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "auto 120px 120px 130px 1fr auto",
+                  gap: 8,
+                  alignItems: "center",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 10,
+                  padding: "10px 12px",
+                  background: task.enabled ? "#ffffff" : "#f8fafc",
+                }}
+              >
+                <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    checked={task.enabled}
+                    onChange={(e) => updateTask(task.id, { enabled: e.target.checked })}
+                  />
+                  Enable
+                </label>
+
+                <select
+                  value={task.timeframe}
+                  onChange={(e) => updateTask(task.id, { timeframe: e.target.value })}
+                  style={{
+                    border: "1px solid #d1d5db",
+                    borderRadius: 6,
+                    padding: "6px 8px",
+                  }}
+                >
+                  {TIMEFRAME_OPTIONS.map((option) => (
+                    <option key={option} value={option}>
+                      {option}
+                    </option>
+                  ))}
+                </select>
+
+                <input
+                  type="number"
+                  inputMode="numeric"
+                  min="1"
+                  step="1"
+                  value={task.candles}
+                  onChange={(e) => updateTask(task.id, { candles: e.target.value })}
+                  disabled={task.useCustomRange}
+                  placeholder="Candles"
+                  style={{
+                    border: "1px solid #d1d5db",
+                    borderRadius: 6,
+                    padding: "6px 8px",
+                    background: task.useCustomRange ? "#f3f4f6" : "#ffffff",
+                  }}
+                />
+
+                <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <input
+                    type="checkbox"
+                    checked={task.useCustomRange}
+                    onChange={(e) => {
+                      const enabled = e.target.checked;
+                      updateTask(task.id, {
+                        useCustomRange: enabled,
+                        start: enabled ? task.start : "",
+                        end: enabled ? task.end : "",
+                      });
+                    }}
+                  />
+                  Custom Range
+                </label>
+
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input
+                    type="datetime-local"
+                    value={task.start}
+                    onChange={(e) => updateTask(task.id, { start: e.target.value })}
+                    disabled={!task.useCustomRange}
+                    style={{
+                      border: "1px solid #d1d5db",
+                      borderRadius: 6,
+                      padding: "6px 8px",
+                      flex: "1 1 auto",
+                    }}
+                  />
+                  <input
+                    type="datetime-local"
+                    value={task.end}
+                    onChange={(e) => updateTask(task.id, { end: e.target.value })}
+                    disabled={!task.useCustomRange}
+                    style={{
+                      border: "1px solid #d1d5db",
+                      borderRadius: 6,
+                      padding: "6px 8px",
+                      flex: "1 1 auto",
+                    }}
+                  />
+                </div>
+
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setTaskConfigs((prev) => [
+                        ...prev,
+                        {
+                          ...task,
+                          id: `task-${Date.now()}`,
+                          enabled: task.enabled,
+                        },
+                      ])
+                    }
+                    style={{
+                      border: "1px solid #d1d5db",
+                      borderRadius: 6,
+                      padding: "6px 10px",
+                      background: "#eef2ff",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Duplicate
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => removeTask(task.id)}
+                    style={{
+                      border: "1px solid #fca5a5",
+                      borderRadius: 6,
+                      padding: "6px 10px",
+                      background: "#fee2e2",
+                      color: "#b91c1c",
+                      cursor: "pointer",
+                    }}
+                    disabled={taskConfigs.length <= 1}
+                  >
+                    Remove
+                  </button>
+                </div>
+              </div>
+            ))}
+
+            {!taskConfigs.length && (
+              <div style={{ fontSize: 12, color: "#ef4444" }}>Add at least one timeframe task.</div>
+            )}
           </div>
 
           <div
