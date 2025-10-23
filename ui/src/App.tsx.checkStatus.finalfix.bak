@@ -1,0 +1,445 @@
+﻿import { useEffect, useState } from "react";
+
+type CoverageRow = {
+  symbol: string;
+  total_required: number;
+  received: number;
+  latest_ts: string | number | null;
+};
+
+export default function App() {
+  const [topSymbols, setTopSymbols] = useState<number>(10);
+  const [interval, setIntervalTf] = useState<string>("1m");
+  const [candlesPerSymbol, setCandlesPerSymbol] = useState<number>(6000);
+  const [rows, setRows] = useState<CoverageRow[]>([]);
+  const [loading, setLoading] = useState<boolean>(false);
+  const [ingesting, setIngesting] = useState<boolean>(false);
+  const [starting, setStarting] = useState<boolean>(false);
+  const [suspendRefresh, setSuspendRefresh] = useState(false);
+  const [msg, setMsg] = useState<string>("");
+
+  async function checkStatus() {
+  if (suspendRefresh) return;
+  try {
+    const r = await fetch("/api/ingestion/status");
+    const j = await r.json().catch(() => ({}));
+    if (j && typeof j.running === "boolean") {
+      setIngesting(!!j.running);
+    }
+  } catch (e) {
+    // network error: keep previous state
+  }
+}));
+    if (j && typeof j.running === "boolean") {
+      setIngesting(!!j.running);
+    }
+  } catch (e) {
+    // network error: keep previous state
+  }
+}
+if (j && typeof j.running === "boolean") {
+      setIngesting(!!j.running);
+    }
+  } catch (e) {
+    // network error: keep previous state
+  }
+}
+if (j && typeof j.running === "boolean") {
+      setIngesting(!!j.running);
+    }
+  } catch (e) {
+    // network error: keep previous state
+  }
+if (typeof j?.running === "boolean") {
+      setIngesting(Boolean(j.running));
+    }
+  } catch (e) {
+    // network error: keep previous state
+  }
+    if (typeof j?.running === "boolean") {
+      setIngesting(Boolean(j.running));
+    }
+  } catch (e) {
+    // network error: keep previous state
+  }
+    if (typeof j?.running === "boolean") {
+      setIngesting(Boolean(j.running));
+    }
+  } catch (e) {
+    // network error: keep previous state
+  }
+    if (typeof j?.running === "boolean") {
+      setIngesting(Boolean(j.running));
+    }
+  } catch (e) {
+    // network error: keep previous state
+  }
+} catch {
+    // network error: don't forcibly flip state; keep previous
+  }
+} catch {
+    // network error: don't forcibly flip state; keep previous
+  }
+} catch {
+      setIngesting(false);
+    }
+  }
+
+  async function loadCoverage() {
+    try {
+      setLoading(true);
+      const url = `/api/report/coverage?timeframe=${interval}&window=${candlesPerSymbol}&limit=${topSymbols}&t=${Date.now()}`;
+      const r = await fetch(url);
+      const j = await r.json();
+      const data: CoverageRow[] = Array.isArray(j) ? j : (j?.rows ?? []);
+      setRows(data);
+    } catch {
+      setRows([]);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function startIngestion() {
+  try {
+    // 1) Validate inputs — no silent defaults
+    const ts = Number(topSymbols);
+    const cps = Number(candlesPerSymbol);
+    if (!Number.isInteger(ts) || ts <= 0) {
+      alert("Please enter a valid positive number for Top Symbols.");
+      return;
+    }
+    if (!Number.isInteger(cps) || cps <= 0) {
+      alert("Please enter a valid positive number for Candles per Symbol.");
+      return;
+    }
+
+    setStarting(true);
+
+    // 2) Enqueue
+    const body = { top_symbols: ts, interval, candles_per_symbol: cps };
+    const r = await fetch("/api/ingestion/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    await r.json().catch(() => ({}
+// 3) Poll until backend reports running=true
+    for (let i = 0; i < 20; i++) {
+      await new Promise(res => setTimeout(res, 500));
+      const s = await fetch("/api/ingestion/status");
+      const sj = await s.json();
+      if (sj?.running) { setIngesting(true); break; }
+    }
+    setMsg("Ingestion started");
+  } catch (e) {
+    console.error(e);
+    setMsg("Start failed");
+  } finally {
+    setStarting(false);
+    setTimeout(() => { checkStatus(); loadCoverage(); }, 800);
+  }
+}
+    if (!Number.isInteger(cps) || cps <= 0) {
+      alert("Please enter a valid positive number for Candles per Symbol.");
+      return;
+    }
+
+    setStarting(true);
+
+    // 2) Enqueue
+    const body = { top_symbols: ts, interval, candles_per_symbol: cps };
+    const r = await fetch("/api/ingestion/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    await r.json().catch(() => ({}
+// 3) Poll until backend reports running=true
+    for (let i = 0; i < 20; i++) {
+      await new Promise(res => setTimeout(res, 500));
+      const s = await fetch("/api/ingestion/status");
+      const sj = await s.json();
+      if (sj?.running) { setIngesting(true); break; }
+    }
+    setMsg("Ingestion started");
+  } catch (e) {
+    console.error(e);
+    setMsg("Start failed");
+  } finally {
+    setStarting(false);
+    setTimeout(() => { checkStatus(); loadCoverage(); }, 800);
+  }
+};
+      const r = await fetch("/api/ingestion/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      await r.json().catch(() => ({}
+// poll backend status until running
+      for (let i = 0; i < 20; i++) {
+        await new Promise(res => setTimeout(res, 500));
+        const s = await fetch("/api/ingestion/status");
+        const sj = await s.json();
+        if (sj?.running) {
+          setIngesting(true);
+          break;
+        }
+      }
+      setMsg("Ingestion started");
+    } catch (e) {
+      console.error(e);
+      setMsg("Start failed");
+    } finally {
+      setStarting(false);
+      setTimeout(() => { checkStatus(); loadCoverage(); }, 800);
+    }
+  }
+
+  async function stopIngestion() {
+    try {
+      setStarting(true);
+      await fetch("/api/ingestion/stop", { method: "POST" });
+      // poll until stopped
+      for (let i = 0; i < 20; i++) {
+        await new Promise(res => setTimeout(res, 500));
+        const s = await fetch("/api/ingestion/status");
+        const sj = await s.json();
+        if (!sj?.running) {
+          setIngesting(false);
+          break;
+        }
+      }
+      setMsg("Ingestion stopped");
+    } catch (e) {
+      console.error(e);
+      setMsg("Stop failed");
+    } finally {
+      setStarting(false);
+      setTimeout(() => { checkStatus(); loadCoverage(); }, 800);
+    }
+  }
+
+  async function flushDB() {
+  try {
+    setSuspendRefresh(true); // stop auto-refresh during flush
+
+    if (ingesting) {
+      const ok = confirm("Ingestion is running. I will stop it, then flush the DB. Continue?");
+      if (!ok) { setSuspendRefresh(false); return; }
+
+      setStarting(true);
+      setMsg("Stopping ingestion…");
+      setIngesting(false); // keep button green
+      if (typeof setRows === "function") setRows([]); // instantly hide table
+
+      await stopIngestion();
+    } else {
+      if (typeof setRows === "function") setRows([]); // hide data if not running
+      setIngesting(false);
+    }
+
+    setMsg("Flushing database…");
+    const r = await fetch("/api/db/flush", { method: "POST" });
+    const j = await r.json().catch(() => ({ message: "DB Flushed!" }
+setMsg(j?.message || "DB Flushed!");
+  } catch (e) {
+    console.error(e);
+    alert("Flush failed");
+    setMsg("Flush failed");
+  } finally {
+    setStarting(false);
+    setTimeout(() => {
+      setSuspendRefresh(false);
+      checkStatus();
+      loadCoverage();
+    }, 800);
+  }
+}
+
+      setStarting(true);
+      setMsg("Stopping ingestion…");
+      setIngesting(false); // keep button green
+      if (typeof setRows === "function") setRows([]); // instantly hide table
+
+      await stopIngestion();
+    } else {
+      if (typeof setRows === "function") setRows([]); // hide data if not running
+      setIngesting(false);
+    }
+
+    setMsg("Flushing database…");
+    const r = await fetch("/api/db/flush", { method: "POST" });
+    const j = await r.json().catch(() => ({ message: "DB Flushed!" }
+setMsg(j?.message || "DB Flushed!");
+  } catch (e) {
+    console.error(e);
+    alert("Flush failed");
+    setMsg("Flush failed");
+  } finally {
+    setStarting(false);
+    setTimeout(() => {
+      setSuspendRefresh(false);
+      checkStatus();
+      loadCoverage();
+    }, 800);
+  }
+}
+      const r = await fetch("/api/db/flush", { method: "POST" });
+      const j = await r.json().catch(() => ({ message: "DB Flushed!" }
+alert(j?.message || "DB Flushed!");
+      setMsg("DB flushed");
+      setTimeout(() => { checkStatus(); loadCoverage(); }, 800);
+    } catch (e) {
+      console.error(e);
+      alert("Flush failed");
+      setMsg("Flush failed");
+    }
+  }
+
+  useEffect(() => {
+    checkStatus();
+    loadCoverage();
+    const id = setInterval(() => { if (suspendRefresh) return; checkStatus(); loadCoverage(); }, 2000);
+    return () => clearInterval(id);
+  }, [interval, candlesPerSymbol, topSymbols]);
+
+  return (
+    <div style={{ padding: 20, fontFamily: "Inter, sans-serif" }}>
+      <h2 style={{ marginBottom: 10 }}>CryptoScreener</h2>
+
+      {msg && <div style={{ marginBottom: 10, padding: 8, background: "#f3f4f6", borderRadius: 8 }}>{msg}</div>}
+
+      <div style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: 12, marginBottom: 14 }}>
+        <h3>Ingestion Settings</h3>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr auto", gap: 10, alignItems: "end" }}>
+          <div>
+            <label>Top Symbols</label>
+<input
+  type="number"
+  inputMode="numeric"
+  min="1"
+  step="1"
+  value={topSymbols === null || topSymbols === undefined ? "" : topSymbols}
+  onChange={(e) => {
+    const v = e.target.value;
+    if (v === "") { setTopSymbols(undefined as any); return; }
+    const n = parseInt(v, 10);
+    setTopSymbols(Number.isNaN(n) ? (topSymbols as any) : (n as any));
+  }}
+  style={{
+    width: "100%",
+    border: "1px solid #ccc",
+    borderRadius: 6,
+    padding: 6,
+  }}
+/>
+          </div>
+          <div>
+            <label>Interval</label>
+            <select value={interval} onChange={e => setIntervalTf(e.target.value)}
+              style={{ width: "100%", border: "1px solid #ccc", borderRadius: 6, padding: 6 }}>
+              <option value="1m">1m</option>
+              <option value="5m">5m</option>
+              <option value="1h">1h</option>
+            </select>
+          </div>
+          <div>
+            <label>Candles per Symbol</label>
+<input
+  type="number"
+  inputMode="numeric"
+  min="1"
+  step="1"
+  value={candlesPerSymbol === null || candlesPerSymbol === undefined ? "" : candlesPerSymbol}
+  onChange={(e) => {
+    const v = e.target.value;
+    if (v === "") { setCandlesPerSymbol(undefined as any); return; }
+    const n = parseInt(v, 10);
+    setCandlesPerSymbol(Number.isNaN(n) ? (candlesPerSymbol as any) : (n as any));
+  }}
+  style={{
+    width: "100%",
+    border: "1px solid #ccc",
+    borderRadius: 6,
+    padding: 6,
+  }}
+/>
+          </div>
+          <button
+            onClick={async () => {
+              if (ingesting) {
+                await stopIngestion();
+              } else {
+                await startIngestion();
+              }
+            }}
+            style={{
+              background: starting ? "#facc15" : (ingesting ? "#ef4444" : "#22c55e"),
+              color: "#fff",
+              padding: "8px 14px",
+              borderRadius: 8,
+              border: "none",
+            }}
+          >
+            {starting ? "Working..." : (ingesting ? "Stop Ingestion" : "Start Ingestion")}
+          </button>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+        <button onClick={loadCoverage} disabled={loading}
+          style={{ border: "1px solid #ccc", borderRadius: 8, padding: "8px 14px" }}>
+          {loading ? "Loading..." : "Refresh"}
+        </button>
+        <button onClick={flushDB}
+          style={{ background: "#0ea5e9", color: "white", padding: "8px 14px", borderRadius: 8, border: "none" }}>
+          🗑 Flush DB
+        </button>
+      </div>
+
+      <table style={{ width: "100%", borderCollapse: "collapse" }}>
+        <thead>
+          <tr style={{ borderBottom: "1px solid #e5e7eb" }}>
+            <th align="left" style={{ padding: 6 }}>Symbol</th>
+            <th align="right" style={{ padding: 6 }}>Total Required</th>
+            <th align="right" style={{ padding: 6 }}>Received</th>
+            <th align="left" style={{ padding: 6 }}>Latest TS</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.symbol} style={{ borderBottom: "1px solid #f3f4f6" }}>
+              <td style={{ padding: 6 }}>{r.symbol}</td>
+              <td align="right" style={{ padding: 6 }}>{r.total_required ?? candlesPerSymbol}</td>
+              <td align="right" style={{ padding: 6 }}>{r.received ?? 0}</td>
+              <td style={{ padding: 6 }}>
+                {r.latest_ts ? new Date(r.latest_ts as any).toLocaleString([], {
+                  timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone
+                }) : "-"}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

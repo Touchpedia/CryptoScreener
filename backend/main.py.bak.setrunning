@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, HTTPException
+﻿from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 import os, time
 from redis import Redis
@@ -68,7 +68,7 @@ def get_dynamic_top_symbols(n: int) -> list[str]:
         if symbols:
             return symbols
     except Exception as e:
-        print(f"?? CCXT top symbols failed: {e}")
+        print(f"⚠️ CCXT top symbols failed: {e}")
     majors = [
         "BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT","ADA/USDT","DOGE/USDT",
         "TON/USDT","TRX/USDT","LINK/USDT","DOT/USDT","MATIC/USDT","LTC/USDT","BCH/USDT",
@@ -94,24 +94,11 @@ async def run_ingestion(request: Request):
     except Exception:
         body = {}
 
+    top_symbols        = int(body.get("top_symbols", 100))
     interval           = str(body.get("interval", "1m"))
     candles_per_symbol = int(body.get("candles_per_symbol", 6000))
 
-    symbols_override = body.get("symbols")
-    symbols: list[str] = []
-    if isinstance(symbols_override, list):
-        seen: set[str] = set()
-        for raw in symbols_override:
-            if not isinstance(raw, str):
-                continue
-            sym = raw.strip()
-            if not sym or sym in seen:
-                continue
-            seen.add(sym)
-            symbols.append(sym)
-
-    if not symbols:
-        raise HTTPException(status_code=400, detail="symbols list required")
+    symbols = get_dynamic_top_symbols(top_symbols)
 
     tf_ms   = tf_to_ms(interval)
     now_ms  = int(time.time() * 1000)
@@ -132,28 +119,21 @@ async def run_ingestion(request: Request):
         q.enqueue("workers.backfill_range_job", sym, interval, start_ts, end_ts)
 
     msg = f"Enqueued {len(symbols)} jobs on {RQ_QUEUE} (interval={interval}, candles={candles_per_symbol})"
-    print(f"? {msg}; window: {start_ts}->{end_ts}; symbols={symbols[:5]}...")
+    print(f"▶ {msg}; window: {start_ts}->{end_ts}; symbols={symbols[:5]}...")
         # mark ingestion as running for UI
     try:
         rconn = Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
         rconn.set("ingestion_running", "1")
         rconn.publish("ingestion_state", "{\"running\": true}")
     except Exception as _e:
-        print(f"?? failed to set ingestion_running: {_e}")
+        print(f"⚠️ failed to set ingestion_running: {_e}")
         # mark ingestion as running for UI
     try:
         rconn = Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
         rconn.set("ingestion_running", "1")
         rconn.publish("ingestion_state", "{\"running\": true}")
     except Exception as _e:
-        print(f"?? failed to set ingestion_running: {_e}")
-        # mark ingestion as running for UI
-    try:
-        rconn = Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-        rconn.set("ingestion_running", "1")
-        rconn.publish("ingestion_state", "{\"running\": true}")
-    except Exception as _e:
-        print(f"?? failed to set ingestion_running: {_e}")
+        print(f"⚠️ failed to set ingestion_running: {_e}")
     return {"message": msg, "symbols": symbols, "start_ts": start_ts, "end_ts": end_ts, "tf_ms": tf_ms}
 
 @app.get("/api/report/coverage")
@@ -178,28 +158,21 @@ async def flush_db():
     cur.execute("TRUNCATE TABLE staging_candles, candles RESTART IDENTITY CASCADE;")
     conn.commit()
     cur.close(); conn.close()
-    print("? Database flushed")
+    print("✅ Database flushed")
         # mark ingestion as running for UI
     try:
         rconn = Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
         rconn.set("ingestion_running", "1")
         rconn.publish("ingestion_state", "{\"running\": true}")
     except Exception as _e:
-        print(f"?? failed to set ingestion_running: {_e}")
+        print(f"⚠️ failed to set ingestion_running: {_e}")
         # mark ingestion as running for UI
     try:
         rconn = Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
         rconn.set("ingestion_running", "1")
         rconn.publish("ingestion_state", "{\"running\": true}")
     except Exception as _e:
-        print(f"?? failed to set ingestion_running: {_e}")
-        # mark ingestion as running for UI
-    try:
-        rconn = Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
-        rconn.set("ingestion_running", "1")
-        rconn.publish("ingestion_state", "{\"running\": true}")
-    except Exception as _e:
-        print(f"?? failed to set ingestion_running: {_e}")
+        print(f"⚠️ failed to set ingestion_running: {_e}")
     return {"message": "Database flushed successfully"}
 
 @app.post("/api/report/coverage")
@@ -227,7 +200,6 @@ from api.routers.report import router as report_router
 from api.routers.admin_control import router as admin_router
 app.include_router(report_router)
 app.include_router(admin_router)
-
 
 
 

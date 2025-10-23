@@ -9,7 +9,12 @@ PG_USER=os.getenv("POSTGRES_USER","postgres")
 PG_PASS=os.getenv("POSTGRES_PASSWORD","postgres")
 
 @router.get("/coverage")
-def coverage(timeframe: str="1m", window: int=6000, limit: int=10):
+def coverage(
+    timeframe: str = "1m",
+    window: int = 6000,
+    limit: int = 10,
+    symbols: list[str] | None = Query(default=None),
+):
     # Returns top symbols with total required, received count, latest ts
     q = """
     WITH latest AS (
@@ -23,13 +28,25 @@ def coverage(timeframe: str="1m", window: int=6000, limit: int=10):
            l.received,
            l.latest_ts
     FROM latest l
+    """
+    params: list[object] = [timeframe, window]
+    symbol_list = [s for s in symbols or [] if isinstance(s, str) and s]
+    effective_limit = max(0, limit)
+    if symbol_list:
+        q += "    WHERE l.symbol = ANY(%s)\n"
+        params.append(symbol_list)
+        effective_limit = len(symbol_list) if effective_limit <= 0 else min(effective_limit, len(symbol_list))
+
+    q += """
     ORDER BY l.received DESC NULLS LAST, l.latest_ts DESC NULLS LAST
     LIMIT %s
     """
+    params.append(effective_limit)
+
     try:
-        conn=psycopg2.connect(host=PG_HOST, dbname=PG_DB, user=PG_USER, password=PG_PASS)
+        conn = psycopg2.connect(host=PG_HOST, dbname=PG_DB, user=PG_USER, password=PG_PASS)
         with conn.cursor() as cur:
-            cur.execute(q, (timeframe, window, limit))
+            cur.execute(q, tuple(params))
             rows = cur.fetchall()
         conn.close()
         return {"ok": True, "rows": [
