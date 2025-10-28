@@ -1,13 +1,17 @@
-﻿{
-  "compilerOptions": {
-    "target": "ESNext",
-    "module": "ESNext",
-    "moduleResolution": "Node",
-    "strict": true,
-    "jsx": "react-jsx",
-    "esModuleInterop": true,
-    "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
-  },
-  "include": ["src", "src/global.d.ts"]
+{
+    "compilerOptions":  {
+                            "target":  "ESNext",
+                            "module":  "ESNext",
+                            "moduleResolution":  "Node",
+                            "strict":  true,
+                            "jsx":  "react-jsx",
+                            "resolveJsonModule":  true,
+                            "esModuleInterop":  true,
+                            "skipLibCheck":  true,
+                            "forceConsistentCasingInFileNames":  true
+                        },
+    "include":  [
+                    "src",
+                    "src/global.d.ts"
+                ]
 }

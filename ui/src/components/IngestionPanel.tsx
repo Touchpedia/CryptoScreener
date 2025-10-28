@@ -1,13 +1,43 @@
 import { useEffect, useState } from "react";
 import { runIngestion, getStatus } from "../lib/api";
 
-type TaskRow = { timeframe: string; candles: string };
+type TaskRow = { timeframe: string; days: string };
 
 const DEFAULT_TASKS: TaskRow[] = [
-  { timeframe: "1m", candles: "600" },
-  { timeframe: "5m", candles: "288" },
-  { timeframe: "1h", candles: "168" },
+  { timeframe: "1m", days: "7" },
+  { timeframe: "3m", days: "14" },
+  { timeframe: "5m", days: "30" },
 ];
+
+const MINUTES_PER_CANDLE: Record<string, number> = {
+  "1m": 1,
+  "3m": 3,
+  "5m": 5,
+  "15m": 15,
+  "1h": 60,
+  "4h": 240,
+  "1d": 1440,
+};
+
+function computeCandleInfo(timeframe: string, daysValue: string) {
+  const minutesPerCandle = MINUTES_PER_CANDLE[timeframe];
+  const days = Number(daysValue);
+  if (!minutesPerCandle || !Number.isFinite(days) || days <= 0) {
+    return null;
+  }
+  const totalCandles = Math.ceil((days * 24 * 60) / minutesPerCandle);
+  const now = new Date();
+  const start = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+  const formatUtc = (d: Date) =>
+    d.toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC");
+  return {
+    totalCandles,
+    startIso: formatUtc(start),
+    endIso: formatUtc(now),
+    startMs: start.getTime(),
+    endMs: now.getTime(),
+  };
+}
 
 export default function IngestionPanel() {
   const [symbols, setSymbols] = useState<string>("BTC/USDT,ETH/USDT");
@@ -17,10 +47,13 @@ export default function IngestionPanel() {
   const [percent, setPercent] = useState<number>(0);
 
   const updateTask = (index: number, patch: Partial<TaskRow>) => {
-    setTasks((prev) => prev.map((row, i) => (i === index ? { ...row, ...patch } : row)));
+    setTasks((prev) =>
+      prev.map((row, i) => (i === index ? { ...row, ...patch } : row)),
+    );
   };
 
-  const addTask = () => setTasks((prev) => [...prev, { timeframe: "15m", candles: "96" }]);
+  const addTask = () =>
+    setTasks((prev) => [...prev, { timeframe: "15m", days: "7" }]);
 
   const removeTask = (index: number) =>
     setTasks((prev) => prev.filter((_, i) => i !== index));
@@ -32,22 +65,30 @@ export default function IngestionPanel() {
       .filter(Boolean);
 
     const taskPayload = tasks
-      .map((row) => ({
-        timeframe: row.timeframe.trim(),
-        candles_per_symbol: Number(row.candles),
-      }))
+      .map((row) => {
+        const timeframe = row.timeframe.trim();
+        const info = computeCandleInfo(timeframe, row.days);
+        return info
+          ? {
+              timeframe,
+              candles_per_symbol: info.totalCandles,
+            }
+          : null;
+      })
       .filter(
-        (row) =>
-          row.timeframe &&
-          Number.isFinite(row.candles_per_symbol) &&
-          row.candles_per_symbol! > 0,
+        (
+          row,
+        ): row is {
+          timeframe: string;
+          candles_per_symbol: number;
+        } => Boolean(row),
       );
 
     if (!symbolList.length) {
       throw new Error("Please provide at least one symbol.");
     }
     if (!taskPayload.length) {
-      throw new Error("Please add at least one timeframe.");
+      throw new Error("Please add at least one timeframe with days.");
     }
     return { symbols: symbolList, tasks: taskPayload };
   };
@@ -60,7 +101,9 @@ export default function IngestionPanel() {
       setRunId(rid);
       setMessage(res?.message ?? "Ingestion started");
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Failed to start ingestion");
+      setMessage(
+        error instanceof Error ? error.message : "Failed to start ingestion",
+      );
     }
   }
 
@@ -100,37 +143,58 @@ export default function IngestionPanel() {
         </button>
       </div>
 
-      <div className="space-y-2">
-        {tasks.map((row, index) => (
-          <div key={index} className="flex gap-2 flex-wrap items-center">
-            <select
-              value={row.timeframe}
-              onChange={(e) => updateTask(index, { timeframe: e.target.value })}
-              className="border rounded px-2 py-1"
-            >
-              {["1m", "5m", "15m", "1h", "4h", "1d"].map((tf) => (
-                <option key={tf} value={tf}>
-                  {tf}
-                </option>
-              ))}
-            </select>
-            <input
-              type="number"
-              min="1"
-              value={row.candles}
-              onChange={(e) => updateTask(index, { candles: e.target.value })}
-              className="border rounded px-2 py-1 w-24"
-              placeholder="Candles"
-            />
-            <button
-              className="px-2 py-1 border rounded"
-              onClick={() => removeTask(index)}
-              disabled={tasks.length === 1}
-            >
-              Remove
-            </button>
-          </div>
-        ))}
+      <div className="space-y-3">
+        {tasks.map((row, index) => {
+          const info = computeCandleInfo(row.timeframe, row.days);
+          return (
+            <div key={index} className="space-y-1">
+              <div className="flex gap-2 flex-wrap items-center">
+                <select
+                  value={row.timeframe}
+                  onChange={(e) =>
+                    updateTask(index, { timeframe: e.target.value })
+                  }
+                  className="border rounded px-2 py-1"
+                >
+                  {["1m", "3m", "5m", "15m", "1h", "4h", "1d"].map((tf) => (
+                    <option key={tf} value={tf}>
+                      {tf}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="number"
+                  min="1"
+                  value={row.days}
+                  onChange={(e) => updateTask(index, { days: e.target.value })}
+                  className="border rounded px-2 py-1 w-32"
+                  placeholder="Days"
+                />
+                <button
+                  className="px-2 py-1 border rounded"
+                  onClick={() => removeTask(index)}
+                  disabled={tasks.length === 1}
+                >
+                  Remove
+                </button>
+              </div>
+              <div className="text-xs text-gray-600">
+                {info ? (
+                  <>
+                    Last {Number(row.days)} days {"->"}{" "}
+                    {info.totalCandles.toLocaleString()} candles ({info.startIso} {"->"}{" "}
+                    {info.endIso})
+                  </>
+                ) : (
+                  <span className="text-red-500">
+                    Enter a positive number of days to see required candles and
+                    date range.
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {message && <div className="text-sm">{message}</div>}

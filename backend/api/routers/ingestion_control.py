@@ -15,6 +15,8 @@ REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 _r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
 CHAN = "ingestion_state"
 KEY = "ingestion_running"
+ACTIVE_SET_KEY = os.getenv("INGESTION_ACTIVE_SET", "ingestion_active_pairs")
+ACTIVE_PREFIX = os.getenv("INGESTION_ACTIVE_PREFIX", "ingestion_active_detail:")
 
 _SYMBOL_CACHE: dict[str, dict[str, object]] = {}
 _SYMBOL_CACHE_TTL = int(os.getenv("SYMBOL_CACHE_TTL", "300"))
@@ -131,6 +133,42 @@ def _purge_queue() -> int:
 @router.get("/status")
 async def status():
     return {"ok": True, "running": _get()}
+
+
+def _active_items() -> list[dict]:
+    try:
+        tokens = _r.smembers(ACTIVE_SET_KEY)
+    except Exception:
+        return []
+    items: list[dict] = []
+    for token in tokens:
+        detail_key = f"{ACTIVE_PREFIX}{token}"
+        raw = _r.get(detail_key)
+        if not raw:
+            _r.srem(ACTIVE_SET_KEY, token)
+            continue
+        try:
+            payload = json.loads(raw)
+            if isinstance(payload, dict):
+                items.append(payload)
+                continue
+        except Exception:
+            pass
+        # fallback if payload missing or malformed
+        if "::" in token:
+            sym, tf = token.split("::", 1)
+        else:
+            sym, tf = token, ""
+        items.append({"symbol": sym, "timeframe": tf})
+    return items
+
+
+@router.get("/active")
+async def active():
+    try:
+        return {"ok": True, "items": _active_items()}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "items": []}
 
 
 @router.get("/symbols")

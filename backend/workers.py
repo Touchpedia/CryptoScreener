@@ -1,14 +1,35 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import time
 from typing import Dict, List, Optional
 
 import ccxt
 import psycopg2
+from redis import Redis
 
 DB_URL = os.getenv("DATABASE_URL", "postgresql://postgres:secret@postgres:5432/candles")
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+
+ACTIVE_SET_KEY = os.getenv("INGESTION_ACTIVE_SET", "ingestion_active_pairs")
+ACTIVE_PREFIX = os.getenv("INGESTION_ACTIVE_PREFIX", "ingestion_active_detail:")
+EVENT_CHANNEL = os.getenv("INGESTION_EVENT_CHANNEL", "ingestion_events")
+
+
+def _redis_conn() -> Optional[Redis]:
+    try:
+        return Redis(
+            host=REDIS_HOST,
+            port=REDIS_PORT,
+            db=REDIS_DB,
+            decode_responses=True,
+        )
+    except Exception:
+        return None
 
 
 def _connect():
@@ -125,6 +146,33 @@ def backfill_range_job(symbol: str, timeframe: str, start_ts: Optional[int], end
     per_call_cap = 1000
     tf_ms = _tf_to_ms(timeframe)
 
+    redis_conn = _redis_conn()
+    tracker_key = f"{symbol}::{timeframe}"
+    detail_key = f"{ACTIVE_PREFIX}{tracker_key}"
+    started_ms = int(time.time() * 1000)
+    last_seen_ts: Optional[int] = None
+
+    def _publish(status: str, last_ts: Optional[int] = None):
+        if redis_conn is None:
+            return
+        payload = {
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "status": status,
+            "started_at": started_ms,
+            "updated_at": int(time.time() * 1000),
+        }
+        if last_ts is not None:
+            payload["last_ts"] = last_ts
+        try:
+            redis_conn.sadd(ACTIVE_SET_KEY, tracker_key)
+            redis_conn.set(detail_key, json.dumps(payload), ex=3600)
+            redis_conn.publish(EVENT_CHANNEL, json.dumps(payload))
+        except Exception:
+            pass
+
+    _publish("running")
+
     # Redispatch loops default to the requested window; None falls back to live tailing.
     since = start_ts if start_ts is not None else None
     hard_end = end_ts or int(time.time() * 1000)
@@ -166,8 +214,9 @@ def backfill_range_job(symbol: str, timeframe: str, start_ts: Optional[int], end
         _copy_to_staging(rows)
         _merge_staging_into_final()
 
-        last_ts = page[-1][0]
-        next_since = last_ts + 1
+        last_seen_ts = page[-1][0]
+        next_since = last_seen_ts + 1
+        _publish("running", last_ts=last_seen_ts)
 
         if next_since > hard_end:
             break
@@ -176,4 +225,13 @@ def backfill_range_job(symbol: str, timeframe: str, start_ts: Optional[int], end
         time.sleep(0.2)
 
     print(f"[worker] done backfill -> {symbol=} {timeframe=}")
+
+    if redis_conn is not None:
+        try:
+            _publish("completed", last_ts=last_seen_ts)
+            redis_conn.srem(ACTIVE_SET_KEY, tracker_key)
+            redis_conn.delete(detail_key)
+        except Exception:
+            pass
+
     return {"ok": True, "symbol": symbol, "timeframe": timeframe}

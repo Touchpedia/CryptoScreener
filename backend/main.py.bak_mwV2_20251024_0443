@@ -256,177 +256,22 @@ async def run_ingestion(request: Request):
         rconn.publish("ingestion_state", "{\"running\": true}")
     except Exception as _e:
         print(f"?? failed to set ingestion_running: {_e}")
-    return {"message": msg, "symbols": symbols, "tasks": tasks}
-
-def _coerce_int(value) -> int | None:
-    try:
-        if isinstance(value, (int, float)):
-            return int(value)
-        if isinstance(value, str) and value.strip():
-            return int(float(value))
-    except (ValueError, TypeError):
-        return None
-    return None
-
-
-def _clean_symbols(raw_symbols) -> list[str]:
-    cleaned: list[str] = []
-    if not raw_symbols:
-        return cleaned
-    for sym in raw_symbols:
-        if isinstance(sym, str):
-            token = sym.strip()
-            if token:
-                cleaned.append(token)
-    return cleaned
-
-
-def _normalize_tasks(raw_tasks) -> list[dict]:
-    normalized: list[dict] = []
-    if not raw_tasks:
-        return normalized
-    now_ms = int(time.time() * 1000)
-    for item in raw_tasks:
-        if not isinstance(item, dict):
-            continue
-        timeframe = str(item.get("timeframe") or "").strip()
-        if not timeframe:
-            continue
-        candles_val = (
-            item.get("candles_per_symbol")
-            or item.get("candles")
-            or item.get("window")
-        )
-        try:
-            candles_int = int(candles_val)
-        except (TypeError, ValueError):
-            continue
-        if candles_int <= 0:
-            continue
-        start_ms = _coerce_int(item.get("start_ts") or item.get("start_ms"))
-        end_ms = _coerce_int(item.get("end_ts") or item.get("end_ms"))
-        try:
-            start_ts, end_ts = _compute_window(timeframe, now_ms, candles_int, start_ms, end_ms)
-        except ValueError:
-            continue
-        normalized.append(
-            {
-                "timeframe": timeframe,
-                "candles_per_symbol": candles_int,
-                "start_ts": start_ts,
-                "end_ts": end_ts,
-            }
-        )
-    return normalized
-
-
-def _to_epoch_ms(value) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, datetime.datetime):
-        dt = value
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=datetime.timezone.utc)
-        else:
-            dt = dt.astimezone(datetime.timezone.utc)
-        return int(dt.timestamp() * 1000)
-    if isinstance(value, (int, float)):
-        if value > 1_000_000_000_000:
-            return int(value)
-        return int(value * 1000)
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return None
-        try:
-            dt = datetime.datetime.fromisoformat(text.replace("Z", "+00:00"))
-        except ValueError:
-            return None
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=datetime.timezone.utc)
-        else:
-            dt = dt.astimezone(datetime.timezone.utc)
-        return int(dt.timestamp() * 1000)
-    return None
-
-
-def _ms_to_iso(ms: int) -> str:
-    return datetime.datetime.utcfromtimestamp(ms / 1000).replace(tzinfo=datetime.timezone.utc).isoformat().replace("+00:00", "Z")
-
-
-def _fetch_coverage_rows(symbols: list[str], tasks: list[dict]) -> list[dict]:
-    if not symbols or not tasks:
-        return []
-
-    results: list[dict] = []
-    with psycopg2.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        user=DB_USER,
-        password=DB_PASS,
-        dbname=DB_NAME,
-    ) as conn:
-        with conn.cursor() as cur:
-            for task in tasks:
-                timeframe = task["timeframe"]
-                required = int(task["candles_per_symbol"])
-                start_ts = int(task["start_ts"])
-                end_ts = int(task["end_ts"])
-                start_iso = _ms_to_iso(start_ts)
-                end_iso = _ms_to_iso(end_ts)
-
-                cur.execute(
-                    """
-                    SELECT symbol, COUNT(*) AS received, MAX(ts) AS latest_ts
-                    FROM candles
-                    WHERE symbol = ANY(%s) AND timeframe = %s AND ts BETWEEN %s AND %s
-                    GROUP BY symbol
-                    """,
-                    (symbols, timeframe, start_iso, end_iso),
-                )
-                rows = {sym: (int(rec or 0), latest) for sym, rec, latest in cur.fetchall()}
-
-                for sym in symbols:
-                    received, latest = rows.get(sym, (0, None))
-                    results.append(
-                        {
-                            "symbol": sym,
-                            "timeframe": timeframe,
-                            "required": required,
-                            "received": received,
-                            "latest_ts": _to_epoch_ms(latest),
-                            "start_ts": start_ts,
-                            "end_ts": end_ts,
-                        }
-                    )
-    return results
-
+    return {"message": msg, "symbols": symbols, "start_ts": start_ts, "end_ts": end_ts, "tf_ms": tf_ms}
 
 @app.get("/api/report/coverage")
-async def report_coverage(request: Request):
-    query = request.query_params
-    requested_symbols = query.getlist("symbols")
-    timeframe = query.get("timeframe")
-    window = query.get("window")
-
-    fallback_symbols = LAST_REQ.get("symbols", [])
-    fallback_tasks = LAST_REQ.get("tasks", [])
-
-    symbols = _clean_symbols(requested_symbols) or fallback_symbols
-
-    tasks_source: list[dict]
-    if timeframe and window:
-        tasks_source = [
-            {"timeframe": timeframe, "candles_per_symbol": window},
-        ]
-    elif fallback_tasks:
-        tasks_source = fallback_tasks
-    else:
-        tasks_source = []
-
-    tasks = _normalize_tasks(tasks_source)
-    rows = _fetch_coverage_rows(symbols, tasks)
-    return {"rows": rows}
+async def report_coverage():
+    import os, psycopg2
+    DB_HOST = os.getenv("POSTGRES_HOST", "postgres")
+    DB_PORT = os.getenv("POSTGRES_PORT", "5432")
+    DB_USER = os.getenv("POSTGRES_USER", "postgres")
+    DB_PASS = os.getenv("POSTGRES_PASSWORD", "secret")
+    DB_NAME = os.getenv("POSTGRES_DB", "candles")
+    conn = psycopg2.connect(host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASS, dbname=DB_NAME)
+    cur = conn.cursor()
+    cur.execute("SELECT symbol, COUNT(*) AS received, MAX(ts) AS latest_ts FROM candles GROUP BY symbol ORDER BY symbol LIMIT 300;")
+    rows = cur.fetchall()
+    cur.close(); conn.close()
+    return {"rows": [{"symbol": s, "total_required": 6000, "received": int(r or 0), "latest_ts": str(t) if t else "-"} for (s, r, t) in rows]}
 
 @app.post("/api/db/flush")
 async def flush_db():
@@ -461,18 +306,15 @@ async def flush_db():
 
 @app.post("/api/report/coverage")
 async def report_coverage_post(request: Request):
+    """
+    POST wrapper: delegates to existing GET /api/report/coverage.
+    Body { "symbols": [...], "timeframes": [...] } is accepted (ignored by current GET impl).
+    """
     try:
-        payload = await request.json()
+        _ = await request.json()
     except Exception:
-        payload = {}
-
-    requested_symbols = payload.get("symbols")
-    requested_tasks = payload.get("tasks") or payload.get("timeframes")
-
-    symbols = _clean_symbols(requested_symbols) or LAST_REQ.get("symbols", [])
-    tasks = _normalize_tasks(requested_tasks or LAST_REQ.get("tasks", []))
-    rows = _fetch_coverage_rows(symbols, tasks)
-    return {"rows": rows}
+        pass
+    return await report_coverage()
 
 
 from api.routers.ingestion_control import router as ingestion_control_router
@@ -492,43 +334,3 @@ app.include_router(admin_router)
 
 
 
-# ======= AUTO-ADDED: symbols_clean endpoint (stable BASE excluded) =======
-from typing import List
-try:
-    import httpx
-except Exception:
-    httpx = None
-
-try:
-    STABLE_BASES
-except NameError:
-    STABLE_BASES = {"USDT","USDC","BUSD","FDUSD","TUSD","USDP","DAI","SUSD","USDD","USTC","GUSD","PAX","USDE"}
-
-@app.get("/api/ingestion/symbols_clean")
-async def api_ingestion_symbols_clean(limit: int = 200):
-    # 1) try native helper
-    syms: List[str] = []
-    try:
-        syms = list(get_dynamic_top_symbols(limit))  # type: ignore
-    except Exception:
-        syms = []
-    # 2) fallback to internal call if empty
-    if (not syms) and httpx is not None:
-        try:
-            async with httpx.AsyncClient(timeout=20) as c:
-                r = await c.get(f"http://localhost:8000/api/ingestion/symbols?limit={int(limit or 200)}")
-                j = r.json() if r.status_code == 200 else {}
-                syms = list(j.get("symbols") or [])
-        except Exception:
-            syms = []
-
-    # 3) filter out BASE stablecoins (keep USDT as QUOTE)
-    out = []
-    for s in syms:
-        if isinstance(s, str) and "/" in s:
-            base = s.split("/", 1)[0]
-            if base in STABLE_BASES:
-                continue
-            out.append(s)
-    return {"symbols": out, "count": len(out)}
-# ======= END AUTO-ADDED =======
