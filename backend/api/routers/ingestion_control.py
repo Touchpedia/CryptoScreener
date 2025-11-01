@@ -23,6 +23,40 @@ _SYMBOL_CACHE_TTL = int(os.getenv("SYMBOL_CACHE_TTL", "300"))
 
 router = APIRouter(prefix="/api/ingestion", tags=["ingestion"])
 
+DEFAULT_USDT_SYMBOLS: list[str] = [
+    "BTC/USDT",
+    "ETH/USDT",
+    "BNB/USDT",
+    "SOL/USDT",
+    "XRP/USDT",
+    "ADA/USDT",
+    "DOGE/USDT",
+    "TON/USDT",
+    "TRX/USDT",
+    "LINK/USDT",
+    "DOT/USDT",
+    "MATIC/USDT",
+    "LTC/USDT",
+    "BCH/USDT",
+    "AVAX/USDT",
+    "XLM/USDT",
+    "UNI/USDT",
+    "ATOM/USDT",
+    "ETC/USDT",
+    "APT/USDT",
+    "NEAR/USDT",
+    "OP/USDT",
+    "ARB/USDT",
+    "TIA/USDT",
+    "INJ/USDT",
+    "SUI/USDT",
+    "SEI/USDT",
+    "FIL/USDT",
+    "AAVE/USDT",
+    "ALGO/USDT",
+    "FTM/USDT",
+    "RUNE/USDT",
+]
 
 def _cache_key(segment: str | None) -> str:
     return (segment or "all").lower()
@@ -107,16 +141,22 @@ def _load_symbols(segment: str | None = None) -> list[str]:
         fallback = _SYMBOL_CACHE.get("all")
         if fallback:
             return list(fallback.get("symbols") or [])
-        return []
+        return list(DEFAULT_USDT_SYMBOLS)
 
 
 def _get() -> bool:
-    return _r.get(KEY) == "1"
+    try:
+        return _r.get(KEY) == "1"
+    except Exception:
+        return False
 
 
 def _set(val: bool) -> None:
-    _r.set(KEY, "1" if val else "0")
-    _r.publish(CHAN, json.dumps({"running": val}))
+    try:
+        _r.set(KEY, "1" if val else "0")
+        _r.publish(CHAN, json.dumps({"running": val}))
+    except Exception:
+        pass
 
 
 def _purge_queue() -> int:
@@ -176,7 +216,12 @@ async def symbols(segment: str = Query("all")):
     cleaned = segment.lower()
     if cleaned not in {"all", "market_cap", "volume", "gainers", "losers"}:
         cleaned = "all"
-    return {"ok": True, "segment": cleaned, "symbols": _load_symbols(cleaned)}
+    symbols = _load_symbols(cleaned)
+    fallback_used = False
+    if not symbols:
+        symbols = list(DEFAULT_USDT_SYMBOLS)
+        fallback_used = True
+    return {"ok": True, "segment": cleaned, "symbols": symbols, "fallback": fallback_used}
 
 
 @router.post("/start")

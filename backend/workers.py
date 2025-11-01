@@ -151,8 +151,17 @@ def backfill_range_job(symbol: str, timeframe: str, start_ts: Optional[int], end
     detail_key = f"{ACTIVE_PREFIX}{tracker_key}"
     started_ms = int(time.time() * 1000)
     last_seen_ts: Optional[int] = None
+    hard_end = end_ts or int(time.time() * 1000)
+    window_start = start_ts if start_ts is not None else None
 
-    def _publish(status: str, last_ts: Optional[int] = None):
+    def _calc_progress(last_ts: Optional[int]) -> Optional[float]:
+        if last_ts is None or window_start is None:
+            return None
+        span = max(hard_end - window_start, 1)
+        ratio = (last_ts - window_start) / span
+        return max(0.0, min(100.0, ratio * 100.0))
+
+    def _publish(status: str, last_ts: Optional[int] = None, ttl: int = 300):
         if redis_conn is None:
             return
         payload = {
@@ -164,9 +173,16 @@ def backfill_range_job(symbol: str, timeframe: str, start_ts: Optional[int], end
         }
         if last_ts is not None:
             payload["last_ts"] = last_ts
+        progress = _calc_progress(last_ts)
+        if progress is None and status == "completed":
+            progress = 100.0
+        if progress is not None:
+            payload["progress"] = progress
+        if status == "completed":
+            payload["completed_at"] = int(time.time() * 1000)
         try:
             redis_conn.sadd(ACTIVE_SET_KEY, tracker_key)
-            redis_conn.set(detail_key, json.dumps(payload), ex=3600)
+            redis_conn.set(detail_key, json.dumps(payload), ex=max(ttl, 60))
             redis_conn.publish(EVENT_CHANNEL, json.dumps(payload))
         except Exception:
             pass
@@ -175,7 +191,6 @@ def backfill_range_job(symbol: str, timeframe: str, start_ts: Optional[int], end
 
     # Redispatch loops default to the requested window; None falls back to live tailing.
     since = start_ts if start_ts is not None else None
-    hard_end = end_ts or int(time.time() * 1000)
 
     while True:
         if since is not None and since > hard_end:
@@ -228,9 +243,7 @@ def backfill_range_job(symbol: str, timeframe: str, start_ts: Optional[int], end
 
     if redis_conn is not None:
         try:
-            _publish("completed", last_ts=last_seen_ts)
-            redis_conn.srem(ACTIVE_SET_KEY, tracker_key)
-            redis_conn.delete(detail_key)
+            _publish("completed", last_ts=last_seen_ts, ttl=900)
         except Exception:
             pass
 

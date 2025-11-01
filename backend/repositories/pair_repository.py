@@ -6,7 +6,10 @@ from typing import Dict, List, Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from ..models.pair_progress import PairProgress
+try:
+    from models.pair_progress import PairProgress
+except ModuleNotFoundError:
+    from backend.models.pair_progress import PairProgress
 
 
 class PairRepository:

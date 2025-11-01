@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+import importlib.util
 import os, time, datetime
 from redis import Redis
 from rq import Queue
@@ -480,13 +481,35 @@ from api.routers.ingestion_control import router as ingestion_control_router
 app.include_router(ingestion_control_router)
 
 from api.routers.ws_ingestion import router as ws_router
+from api.routers.ws_chart import router as ws_chart_router
 app.include_router(ws_router)
+app.include_router(ws_chart_router)
 
 
 from api.routers.report import router as report_router
 from api.routers.admin_control import router as admin_router
+from api.routers.chart_view import router as chart_router
 app.include_router(report_router)
 app.include_router(admin_router)
+app.include_router(chart_router)
+
+if importlib.util.find_spec("services.websocket_handler"):
+    from services.websocket_handler import start_websocket_handler, stop_websocket_handler
+    from services.ingestion_service import shutdown_ingestion_service
+else:
+    from backend.services.websocket_handler import start_websocket_handler, stop_websocket_handler
+    from backend.services.ingestion_service import shutdown_ingestion_service
+
+
+@app.on_event("startup")
+async def _startup_events() -> None:
+    await start_websocket_handler()
+
+
+@app.on_event("shutdown")
+async def _shutdown_events() -> None:
+    await stop_websocket_handler()
+    await shutdown_ingestion_service()
 
 
 

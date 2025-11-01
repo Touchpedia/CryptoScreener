@@ -7,7 +7,10 @@ from sqlalchemy import DateTime, Float, Integer, String, func
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
-from ..core.db import Base
+try:
+    from core.db import Base
+except ModuleNotFoundError:
+    from backend.core.db import Base
 
 
 def utcnow() -> datetime:

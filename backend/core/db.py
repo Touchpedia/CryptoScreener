@@ -1,6 +1,9 @@
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase
-from backend.core.config import get_settings
+try:
+    from core.config import get_settings
+except ModuleNotFoundError:
+    from backend.core.config import get_settings
 
 # SQLAlchemy 2.0 style Base
 class Base(DeclarativeBase):

@@ -1,190 +1,116 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { fetchStatusSnapshot, PairProgress, RunProgress } from "../lib/api";
 
-type PairProgress = {
-  pair: string
-  status?: string | null
-  progress?: number | null
-  timeframes?: Record<string, number>
-  updatedAt?: string | null
-}
-
-type RunProgress = {
-  run_id: string
-  status?: string
-  symbol?: string
-  timeframe?: string
-  step?: number
-  total?: number
-  percent?: number
-  updatedAt?: string
-  error?: string
-}
-
-type Snapshot = {
-  items: PairProgress[]
-  total: number
-  lastUpdated?: string | null
-  run?: RunProgress
-}
-
-const STATUS_ENDPOINTS = ['/api/status', 'http://127.0.0.1:8000/api/status']
-
-const formatPercent = (value: number | null | undefined, digits = 0) => {
-  if (typeof value !== 'number' || Number.isNaN(value)) {
-    return 'â€”'
+function formatPercent(value: number | null | undefined) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return "0%";
   }
-  const factor = 10 ** digits
-  const rounded = Math.round(value * factor) / factor
-  return `${rounded.toFixed(digits)}%`
+  return `${value.toFixed(1)}%`;
 }
 
-const formatTime = (value: string | null | undefined) => {
+function formatTime(value: string | null | undefined) {
   if (!value) {
-    return 'â€”'
+    return "-";
   }
   try {
-    const date = new Date(value)
-    return date.toLocaleTimeString()
+    return new Date(value).toLocaleString();
   } catch {
-    return value
+    return value;
   }
 }
 
-const summariseTimeframes = (value: Record<string, number> | undefined) => {
-  if (!value || Object.keys(value).length === 0) {
-    return ''
-  }
-  return Object.entries(value)
-    .map(([key, pct]) => {
-      const normalized = pct > 1 ? pct : pct * 100
-      return `${key}: ${Math.round(normalized)}%`
-    })
-    .join(', ')
+function statusClass(status: string | null | undefined) {
+  if (!status) return "status-pill";
+  return `status-pill status-pill--${status.toLowerCase()}`;
 }
 
 export default function StatusBoard() {
-  const [snapshot, setSnapshot] = useState<Snapshot | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-  const timerRef = useRef<number | null>(null)
-  const hasLoadedRef = useRef(false)
+  const [pairs, setPairs] = useState<PairProgress[]>([]);
+  const [run, setRun] = useState<RunProgress | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const fetchStatus = useCallback(async () => {
-    if (!hasLoadedRef.current) {
-      setLoading(true)
-    }
-    setError(null)
-    let lastError: unknown = null
-
-    for (const endpoint of STATUS_ENDPOINTS) {
-      try {
-        const response = await fetch(endpoint, { method: 'GET', headers: { Accept: 'application/json' } })
-        if (!response.ok) {
-          throw new Error(`Status request failed (${response.status})`)
-        }
-        const data = (await response.json()) as Snapshot
-        setSnapshot(data)
-        hasLoadedRef.current = true
-        setLoading(false)
-        return
-      } catch (err) {
-        lastError = err
-        if (!(err instanceof TypeError)) {
-          break
-        }
+  const displayedPairs = useMemo(() => {
+    const copy = [...pairs];
+    copy.sort((a, b) => {
+      const aUpdated = a.updatedAt ? Date.parse(a.updatedAt) : 0;
+      const bUpdated = b.updatedAt ? Date.parse(b.updatedAt) : 0;
+      if (bUpdated !== aUpdated) {
+        return bUpdated - aUpdated;
       }
-    }
+      return a.pair.localeCompare(b.pair);
+    });
+    return copy;
+  }, [pairs]);
 
-    const reason =
-      lastError instanceof Error ? lastError.message : 'Unable to reach the API. Check that the backend is running.'
-    setError(reason)
-    setLoading(false)
-  }, [])
+  const load = useCallback(async () => {
+    try {
+      setError(null);
+      const snapshot = await fetchStatusSnapshot();
+      setPairs(snapshot.pairs ?? []);
+      setRun(snapshot.run ?? null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load status");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
-    fetchStatus()
-    timerRef.current = window.setInterval(fetchStatus, 5000)
-
-    return () => {
-      if (timerRef.current) {
-        window.clearInterval(timerRef.current)
-      }
-    }
-  }, [fetchStatus])
+    load();
+    const id = window.setInterval(load, 5000);
+    return () => window.clearInterval(id);
+  }, [load]);
 
   useEffect(() => {
     const handleStart = () => {
-      window.setTimeout(fetchStatus, 500)
-    }
-
-    window.addEventListener('ingestion:started', handleStart)
-    return () => {
-      window.removeEventListener('ingestion:started', handleStart)
-    }
-  }, [fetchStatus])
-
-  const items = useMemo(() => snapshot?.items ?? [], [snapshot])
-  const runProgress = snapshot?.run
+      window.setTimeout(load, 500);
+    };
+    window.addEventListener("ingestion:started", handleStart);
+    return () => window.removeEventListener("ingestion:started", handleStart);
+  }, [load]);
 
   return (
-    <section className="status-board">
-      <header className="status-board__header">
-        <h2>Latest Progress</h2>
-        <div className="status-board__meta">
-          <span>Pairs tracked: {snapshot?.total ?? 0}</span>
-          <span>Last update: {formatTime(snapshot?.lastUpdated)}</span>
+    <section className="panel" aria-labelledby="status-heading">
+      <header className="panel__header">
+        <div>
+          <h2 id="status-heading">Ingestion Status</h2>
+          <p>Live view of pair progress and the most recent run.</p>
         </div>
-        {runProgress && (
-          <div className="status-board__run">
-            <span className={`status-pill status-pill--${(runProgress.status ?? 'unknown').toLowerCase()}`}>
-              {runProgress.status ?? 'unknown'}
-            </span>
-            <span>{formatPercent(runProgress.percent ?? 0, 1)}</span>
-            <span>
-              Step {runProgress.step ?? 0}/{runProgress.total ?? 0}
-            </span>
-            {runProgress.symbol && runProgress.timeframe && (
-              <span>
-                {runProgress.symbol} Â· {runProgress.timeframe}
-              </span>
-            )}
-            {runProgress.error && <span className="status-board__run-error">{runProgress.error}</span>}
+        {run && (
+          <div className="run-indicator">
+            <span className={statusClass(run.status)}>{run.status ?? "unknown"}</span>
+            <span>{formatPercent(run.percent)}</span>
+            {run.symbol && run.timeframe && <span>{`${run.symbol} (${run.timeframe})`}</span>}
           </div>
         )}
       </header>
 
-      {loading && !items.length && <p className="status-board__hint">Loading status...</p>}
-      {error && <p className="message error">{error}</p>}
+      {loading && <p className="hint">Loading status...</p>}
+      {error && <p className="error">{error}</p>}
 
-      {!loading && !error && !items.length && (
-        <p className="status-board__hint">No progress yet. Start an ingestion run to populate status.</p>
-      )}
+      {!loading && !error && displayedPairs.length === 0 && <p className="hint">No status available yet.</p>}
 
-      {items.length > 0 && (
+      {displayedPairs.length > 0 && (
         <div className="status-table">
           <div className="status-table__header">
             <span>Pair</span>
             <span>Status</span>
             <span>Progress</span>
-            <span>Last Updated</span>
+            <span>Updated</span>
           </div>
           <div className="status-table__body">
-            {items.map((item) => (
-              <div className="status-table__row" key={item.pair}>
-                <span>{item.pair}</span>
-                <span className={`status-pill status-pill--${(item.status ?? 'idle').toLowerCase()}`}>
-                  {item.status ?? 'idle'}
-                </span>
-                <span title={summariseTimeframes(item.timeframes)}>{formatPercent(item.progress)}</span>
-                <span>{formatTime(item.updatedAt)}</span>
+            {displayedPairs.map((pair) => (
+              <div key={pair.pair} className="status-table__row">
+                <span>{pair.pair}</span>
+                <span className={statusClass(pair.status)}>{pair.status ?? "idle"}</span>
+                <span>{formatPercent(pair.progress)}</span>
+                <span>{formatTime(pair.updatedAt)}</span>
               </div>
             ))}
           </div>
         </div>
       )}
     </section>
-  )
+  );
 }
-
-// synced 2025-10-20 01:39:11Z
-

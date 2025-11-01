@@ -12,6 +12,12 @@ export default defineConfig({
         changeOrigin: true,
         secure: false,
       },
+      "/ws": {
+        target: "http://backend:8000",
+        changeOrigin: true,
+        secure: false,
+        ws: true,
+      },
     },
   },
 });
