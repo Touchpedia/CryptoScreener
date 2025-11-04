@@ -372,9 +372,6 @@ def _fetch_coverage_rows(symbols: list[str], tasks: list[dict]) -> list[dict]:
                 required = int(task["candles_per_symbol"])
                 start_ts = int(task["start_ts"])
                 end_ts = int(task["end_ts"])
-                start_iso = _ms_to_iso(start_ts)
-                end_iso = _ms_to_iso(end_ts)
-
                 cur.execute(
                     """
                     SELECT symbol, COUNT(*) AS received, MAX(ts) AS latest_ts
@@ -382,7 +379,7 @@ def _fetch_coverage_rows(symbols: list[str], tasks: list[dict]) -> list[dict]:
                     WHERE symbol = ANY(%s) AND timeframe = %s AND ts BETWEEN %s AND %s
                     GROUP BY symbol
                     """,
-                    (symbols, timeframe, start_iso, end_iso),
+                    (symbols, timeframe, start_ts, end_ts),
                 )
                 rows = {sym: (int(rec or 0), latest) for sym, rec, latest in cur.fetchall()}
 

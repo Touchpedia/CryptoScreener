@@ -34,6 +34,15 @@ const WEBSOCKET_COVERAGE_READY_THRESHOLD = 0.98;
 const WEBSOCKET_COVERAGE_WARNING_THRESHOLD = 0.9;
 const WEBSOCKET_FRESH_MS_READY = 5 * 60 * 1000;
 const WEBSOCKET_FRESH_MS_WARN = 30 * 60 * 1000;
+const TRADINGVIEW_INTERVAL_MAP = {
+    "1m": "1",
+    "3m": "3",
+    "5m": "5",
+    "15m": "15",
+    "1h": "60",
+    "4h": "240",
+    "1d": "D",
+};
 function computeCandleInfo(timeframe, daysValue) {
     const minutesPerCandle = MINUTES_PER_CANDLE[timeframe];
     const days = Number(daysValue);
@@ -388,6 +397,8 @@ export default function App() {
         const force = options?.force ?? false;
         if (!force && suspendRefresh)
             return;
+        if (coverageError && !force)
+            return;
         const activeSymbols = selectedSymbols.filter((sym) => availableSymbols.includes(sym));
         const activeTasks = taskConfigs
             .filter((task) => task.enabled)
@@ -405,47 +416,128 @@ export default function App() {
             .filter((task) => Boolean(task));
         if (activeSymbols.length === 0 || !activeTasks.length) {
             setRows([]);
+            setCoverageError(null);
             return;
         }
+        const normalizeRow = (row, taskFallback) => {
+            const pickNumber = (...values) => {
+                for (const value of values) {
+                    if (value === null || value === undefined)
+                        continue;
+                    const parsed = Number(value);
+                    if (Number.isFinite(parsed) && parsed >= 0) {
+                        return parsed;
+                    }
+                }
+                return 0;
+            };
+            const normalizeTimestamp = (value, fallback) => {
+                if (typeof value === "number") {
+                    return value;
+                }
+                if (typeof value === "string") {
+                    const parsed = Date.parse(value);
+                    return Number.isNaN(parsed) ? fallback : parsed;
+                }
+                return fallback;
+            };
+            const fallback = taskFallback ?? null;
+            const symbol = typeof row?.symbol === "string" ? row.symbol : String(row?.symbol ?? "");
+            const timeframe = typeof row?.timeframe === "string" && row.timeframe.trim()
+                ? row.timeframe
+                : fallback?.timeframe ?? "";
+            const required = pickNumber(row?.required, row?.candles_per_symbol, row?.total_required, fallback?.candles_per_symbol);
+            const received = pickNumber(row?.received);
+            const coverage = required > 0 ? received / required : 0;
+            const latestTs = normalizeTimestamp(row?.latest_ts ?? row?.latestTs, null);
+            const startTs = normalizeTimestamp(row?.start_ts ?? row?.startTs, fallback?.start_ts ?? null);
+            const endTs = normalizeTimestamp(row?.end_ts ?? row?.endTs, fallback?.end_ts ?? null);
+            return {
+                symbol,
+                timeframe,
+                required,
+                received,
+                coverage,
+                latest_ts: latestTs,
+                start_ts: startTs,
+                end_ts: endTs,
+            };
+        };
+        const fetchCoverageFallback = async (symbols, tasks) => {
+            const aggregated = [];
+            for (const task of tasks) {
+                const params = new URLSearchParams();
+                params.set("timeframe", task.timeframe);
+                params.set("window", String(task.candles_per_symbol));
+                symbols.forEach((sym) => params.append("symbols", sym));
+                const response = await fetch(`/api/report/coverage?${params.toString()}`);
+                if (!response.ok) {
+                    const text = await response.text().catch(() => "");
+                    throw new Error(`Fallback coverage request failed (${response.status})${text ? `: ${text}` : ""}`);
+                }
+                const json = await response.json().catch(() => null);
+                const data = Array.isArray(json) ? json : json?.rows ?? [];
+                aggregated.push(...data.map((row) => normalizeRow({
+                    ...row,
+                    timeframe: task.timeframe,
+                    start_ts: row?.start_ts ?? task.start_ts,
+                    end_ts: row?.end_ts ?? task.end_ts,
+                    required: row?.required ?? row?.total_required ?? task.candles_per_symbol,
+                }, task)));
+            }
+            return aggregated;
+        };
         try {
             setLoading(true);
-            const response = await fetch("/api/report/coverage", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    symbols: activeSymbols,
-                    tasks: activeTasks,
-                }),
-            });
-            const json = await response.json().catch(() => null);
-            const data = Array.isArray(json) ? json : json?.rows ?? [];
-            const normalized = data.map((row) => {
-                const required = Number(row.required ?? row.candles_per_symbol ?? 0);
-                const received = Number(row.received ?? 0);
-                const coverage = required > 0 ? received / required : 0;
-                return {
-                    symbol: String(row.symbol ?? ""),
-                    timeframe: String(row.timeframe ?? ""),
-                    required,
-                    received,
-                    coverage,
-                    latest_ts: row.latest_ts ?? null,
-                    start_ts: typeof row.start_ts === "number"
-                        ? row.start_ts
-                        : typeof row.start_ts === "string"
-                            ? Date.parse(row.start_ts)
-                            : null,
-                    end_ts: typeof row.end_ts === "number"
-                        ? row.end_ts
-                        : typeof row.end_ts === "string"
-                            ? Date.parse(row.end_ts)
-                            : null,
-                };
-            });
-            setRows(normalized);
+            setCoverageError(null);
+            let postError = null;
+            try {
+                const response = await fetch("/api/report/coverage", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        symbols: activeSymbols,
+                        tasks: activeTasks,
+                    }),
+                });
+                if (response.ok) {
+                    const json = await response.json().catch(() => null);
+                    const data = Array.isArray(json) ? json : json?.rows ?? [];
+                    setRows(data.map((row) => normalizeRow(row)));
+                    setCoverageError(null);
+                    return;
+                }
+                const errorText = await response.text().catch(() => "");
+                if (response.status !== 404 && response.status !== 405) {
+                    throw new Error(`Coverage request failed (${response.status})${errorText ? `: ${errorText}` : ""}`);
+                }
+                postError = new Error(`POST /api/report/coverage not available (status ${response.status})`);
+            }
+            catch (error) {
+                postError =
+                    error instanceof Error ? error : new Error("Failed to request coverage (POST)");
+            }
+            try {
+                const fallbackRows = await fetchCoverageFallback(activeSymbols, activeTasks);
+                setRows(fallbackRows);
+                setCoverageError(null);
+                return;
+            }
+            catch (fallbackError) {
+                const fallbackMessage = fallbackError instanceof Error
+                    ? fallbackError.message
+                    : String(fallbackError ?? "Unknown fallback failure");
+                const combinedMessage = postError
+                    ? `${postError.message}. Fallback also failed: ${fallbackMessage}`
+                    : fallbackMessage;
+                setRows([]);
+                setCoverageError(combinedMessage);
+            }
         }
-        catch {
+        catch (error) {
+            const message = error instanceof Error ? error.message : "Unexpected error while loading coverage.";
             setRows([]);
+            setCoverageError(message);
         }
         finally {
             setLoading(false);
@@ -754,6 +846,8 @@ export default function App() {
     const selectedCount = selectedSymbols.length;
     const fetchedCount = rows.length;
     const [nowTick, setNowTick] = useState(() => Date.now());
+    const [coverageError, setCoverageError] = useState(null);
+    const [chartSelection, setChartSelection] = useState(null);
     useEffect(() => {
         if (typeof window === "undefined") {
             return;
@@ -1168,6 +1262,52 @@ export default function App() {
         return sorted;
     }, [rows, rowSymbolFilter, rowTimeframeFilter, rowSortField, rowSortDirection]);
     const visibleCount = displayRows.length;
+    useEffect(() => {
+        if (!displayRows.length) {
+            setChartSelection(null);
+            return;
+        }
+        setChartSelection((current) => {
+            if (current &&
+                displayRows.some((row) => row.symbol === current.symbol && row.timeframe === current.timeframe)) {
+                return current;
+            }
+            const first = displayRows[0];
+            return first ? { symbol: first.symbol, timeframe: first.timeframe } : null;
+        });
+    }, [displayRows]);
+    const tradingViewUrl = useMemo(() => {
+        if (!chartSelection) {
+            return null;
+        }
+        const interval = TRADINGVIEW_INTERVAL_MAP[chartSelection.timeframe] ??
+            TRADINGVIEW_INTERVAL_MAP["1h"];
+        const symbolToken = chartSelection.symbol.replace("/", "");
+        const symbol = `BINANCE:${symbolToken}`;
+        const params = new URLSearchParams({
+            symbol,
+            interval,
+            theme: "dark",
+            style: "1",
+            locale: "en",
+            toolbarbg: "#0b1120",
+            backgroundColor: "#0b1120",
+            hide_legend: "1",
+            hide_side_toolbar: "0",
+            allow_symbol_change: "0",
+            enable_publishing: "0",
+            hideideas: "1",
+            autosize: "1",
+        });
+        return `https://s.tradingview.com/widgetembed/?${params.toString()}`;
+    }, [chartSelection]);
+    const tradingViewExternalUrl = useMemo(() => {
+        if (!chartSelection) {
+            return null;
+        }
+        const symbolToken = chartSelection.symbol.replace("/", "");
+        return `https://www.tradingview.com/chart/?symbol=BINANCE:${symbolToken}`;
+    }, [chartSelection]);
     const handleRowSymbolFilterChange = (event) => {
         const values = Array.from(event.target.selectedOptions).map((option) => option.value);
         setRowSymbolFilter(values);
@@ -1569,11 +1709,21 @@ export default function App() {
                                                     background: "#eef2ff",
                                                     cursor: rowTimeframeOptions.length ? "pointer" : "not-allowed",
                                                     fontSize: 12,
-                                                }, children: "Select All" })] })] })] }), _jsxs("div", { style: { marginBottom: 10, fontSize: 12, color: "#4b5563" }, children: ["Showing ", visibleCount.toLocaleString(), " of ", fetchedCount.toLocaleString(), " symbol/timeframe rows (selected ", selectedCount.toLocaleString(), " symbols, ", enabledTaskCount.toLocaleString(), " timeframes enabled)."] }), _jsxs("table", { style: { width: "100%", borderCollapse: "collapse" }, children: [_jsx("thead", { children: _jsxs("tr", { style: { borderBottom: "1px solid #e5e7eb" }, children: [_jsx("th", { align: "left", style: { padding: 6 }, children: _jsxs("span", { style: { display: "inline-flex", alignItems: "center" }, children: ["Symbol", renderSortControls("symbol")] }) }), _jsx("th", { align: "left", style: { padding: 6 }, children: _jsxs("span", { style: { display: "inline-flex", alignItems: "center" }, children: ["Timeframe", renderSortControls("timeframe")] }) }), _jsx("th", { align: "right", style: { padding: 6 }, children: _jsxs("span", { style: { display: "inline-flex", alignItems: "center" }, children: ["Required", renderSortControls("required")] }) }), _jsx("th", { align: "right", style: { padding: 6 }, children: _jsxs("span", { style: { display: "inline-flex", alignItems: "center" }, children: ["Received", renderSortControls("received")] }) }), _jsx("th", { align: "right", style: { padding: 6 }, children: _jsxs("span", { style: { display: "inline-flex", alignItems: "center" }, children: ["Coverage", renderSortControls("coverage")] }) }), _jsx("th", { align: "left", style: { padding: 6 }, children: _jsxs("span", { style: { display: "inline-flex", alignItems: "center" }, children: ["Latest TS", renderSortControls("latest")] }) }), _jsx("th", { align: "left", style: { padding: 6 }, children: "Window" })] }) }), _jsx("tbody", { children: displayRows.map((row) => {
+                                                }, children: "Select All" })] })] })] }), _jsxs("div", { style: { marginBottom: 10, fontSize: 12, color: "#4b5563" }, children: ["Showing ", visibleCount.toLocaleString(), " of ", fetchedCount.toLocaleString(), " symbol/timeframe rows (selected ", selectedCount.toLocaleString(), " symbols, ", enabledTaskCount.toLocaleString(), " timeframes enabled)."] }), coverageError && (_jsxs("div", { style: {
+                            marginBottom: 14,
+                            padding: "12px 16px",
+                            borderRadius: 12,
+                            border: "1px solid #fecaca",
+                            background: "rgba(254, 226, 226, 0.65)",
+                            color: "#991b1b",
+                            fontSize: 12,
+                        }, children: ["Coverage refresh failed: ", coverageError] })), _jsxs("table", { style: { width: "100%", borderCollapse: "collapse" }, children: [_jsx("thead", { children: _jsxs("tr", { style: { borderBottom: "1px solid #e5e7eb" }, children: [_jsx("th", { align: "left", style: { padding: 6 }, children: _jsxs("span", { style: { display: "inline-flex", alignItems: "center" }, children: ["Symbol", renderSortControls("symbol")] }) }), _jsx("th", { align: "left", style: { padding: 6 }, children: _jsxs("span", { style: { display: "inline-flex", alignItems: "center" }, children: ["Timeframe", renderSortControls("timeframe")] }) }), _jsx("th", { align: "right", style: { padding: 6 }, children: _jsxs("span", { style: { display: "inline-flex", alignItems: "center" }, children: ["Required", renderSortControls("required")] }) }), _jsx("th", { align: "right", style: { padding: 6 }, children: _jsxs("span", { style: { display: "inline-flex", alignItems: "center" }, children: ["Received", renderSortControls("received")] }) }), _jsx("th", { align: "right", style: { padding: 6 }, children: _jsxs("span", { style: { display: "inline-flex", alignItems: "center" }, children: ["Coverage", renderSortControls("coverage")] }) }), _jsx("th", { align: "left", style: { padding: 6 }, children: _jsxs("span", { style: { display: "inline-flex", alignItems: "center" }, children: ["Latest TS", renderSortControls("latest")] }) }), _jsx("th", { align: "left", style: { padding: 6 }, children: "Window" })] }) }), _jsx("tbody", { children: displayRows.map((row) => {
                                     const key = `${row.symbol}-${row.timeframe}`;
                                     const trackerKey = `${row.symbol}::${row.timeframe}`;
                                     const active = activeRows[trackerKey];
                                     const isActive = Boolean(active && (active.status ?? "running") !== "completed");
+                                    const isSelected = chartSelection?.symbol === row.symbol &&
+                                        chartSelection?.timeframe === row.timeframe;
                                     const required = Number(row.required ?? 0);
                                     const received = Number(row.received ?? 0);
                                     const coveragePct = Math.min(100, Math.max(0, row.coverage * 100));
@@ -1588,10 +1738,58 @@ export default function App() {
                                         : undefined;
                                     return (_jsxs("tr", { style: {
                                             borderBottom: "1px solid #f3f4f6",
-                                            background: isActive ? "#ecfeff" : undefined,
+                                            background: isSelected
+                                                ? "rgba(129, 140, 248, 0.14)"
+                                                : isActive
+                                                    ? "#ecfeff"
+                                                    : undefined,
                                             transition: "background 0.2s ease",
-                                        }, children: [_jsx("td", { style: { padding: 6 }, children: _jsxs("span", { style: { display: "inline-flex", alignItems: "center", gap: 6 }, children: [isActive && _jsx("span", { className: "ingestion-active-indicator", title: activeTitle }), _jsx("span", { title: activeTitle, children: row.symbol })] }) }), _jsx("td", { style: { padding: 6 }, children: row.timeframe }), _jsx("td", { align: "right", style: { padding: 6 }, children: requiredLabel }), _jsx("td", { align: "right", style: { padding: 6 }, children: receivedLabel }), _jsx("td", { align: "right", style: { padding: 6 }, children: coverageLabel }), _jsx("td", { style: { padding: 6 }, children: latestTs }), _jsx("td", { style: { padding: 6 }, children: startTs !== "-" && endTs !== "-" ? `${startTs} -> ${endTs}` : "-" })] }, key));
-                                }) })] })] })) : activeTab === "websockets" ? (_jsxs("div", { style: {
+                                            cursor: "pointer",
+                                            outline: "none",
+                                        }, onClick: () => setChartSelection({ symbol: row.symbol, timeframe: row.timeframe }), onKeyDown: (event) => {
+                                            if (event.key === "Enter" || event.key === " ") {
+                                                event.preventDefault();
+                                                setChartSelection({ symbol: row.symbol, timeframe: row.timeframe });
+                                            }
+                                        }, tabIndex: 0, "aria-selected": isSelected, children: [_jsx("td", { style: { padding: 6 }, children: _jsxs("span", { style: { display: "inline-flex", alignItems: "center", gap: 6 }, children: [isActive && _jsx("span", { className: "ingestion-active-indicator", title: activeTitle }), _jsx("span", { title: activeTitle, children: row.symbol })] }) }), _jsx("td", { style: { padding: 6 }, children: row.timeframe }), _jsx("td", { align: "right", style: { padding: 6 }, children: requiredLabel }), _jsx("td", { align: "right", style: { padding: 6 }, children: receivedLabel }), _jsx("td", { align: "right", style: { padding: 6 }, children: coverageLabel }), _jsx("td", { style: { padding: 6 }, children: latestTs }), _jsx("td", { style: { padding: 6 }, children: startTs !== "-" && endTs !== "-" ? `${startTs} -> ${endTs}` : "-" })] }, key));
+                                }) })] }), _jsxs("div", { style: {
+                            marginTop: 18,
+                            border: "1px solid #d1d5db",
+                            borderRadius: 18,
+                            overflow: "hidden",
+                            background: "#ffffff",
+                            boxShadow: "0 10px 28px rgba(15, 23, 42, 0.12)",
+                        }, children: [_jsxs("div", { style: {
+                                    padding: "14px 18px",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "space-between",
+                                    gap: 12,
+                                    background: "linear-gradient(135deg, rgba(30,64,175,0.14), rgba(30,64,175,0.04))",
+                                }, children: [_jsxs("div", { style: { display: "flex", flexDirection: "column" }, children: [_jsx("span", { style: { fontWeight: 600, fontSize: 15, color: "#1e293b" }, children: "Chart preview" }), chartSelection ? (_jsxs("span", { style: { fontSize: 12, color: "#334155" }, children: [chartSelection.symbol, " \u00B7 ", chartSelection.timeframe] })) : (_jsx("span", { style: { fontSize: 12, color: "#475569" }, children: "Select any row above to preview the matching chart." }))] }), tradingViewExternalUrl && (_jsx("a", { href: tradingViewExternalUrl, target: "_blank", rel: "noopener noreferrer", style: {
+                                            fontSize: 12,
+                                            fontWeight: 600,
+                                            padding: "6px 12px",
+                                            borderRadius: 999,
+                                            border: "1px solid #2563eb",
+                                            color: "#2563eb",
+                                            textDecoration: "none",
+                                            background: "#ffffff",
+                                            transition: "background 0.2s ease",
+                                        }, children: "Open full chart" }))] }), _jsx("div", { style: {
+                                    minHeight: 320,
+                                    background: "#0b1120",
+                                    display: "flex",
+                                    alignItems: "stretch",
+                                    justifyContent: "center",
+                                }, children: chartSelection && tradingViewUrl ? (_jsx("iframe", { src: tradingViewUrl, title: `Chart preview for ${chartSelection.symbol} ${chartSelection.timeframe}`, style: { border: "none", width: "100%", minHeight: 320 }, loading: "lazy" }, `${chartSelection.symbol}-${chartSelection.timeframe}`)) : (_jsx("div", { style: {
+                                        color: "#e2e8f0",
+                                        fontSize: 13,
+                                        display: "flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        width: "100%",
+                                    }, children: "Coverage data is required before we can render a chart preview." })) })] })] })) : activeTab === "websockets" ? (_jsxs("div", { style: {
                     display: "flex",
                     flexDirection: "column",
                     gap: 24,
