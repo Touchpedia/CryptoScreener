@@ -103,6 +103,3 @@ export default function App() {
     </div>
   );
 }
-
-import SymbolsPanel from './components/SymbolsPanel';
-\nfunction App() {\n  return (<div><SymbolsPanel /></div>);\n}\nexport default App;
