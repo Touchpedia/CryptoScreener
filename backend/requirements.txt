@@ -5,3 +5,4 @@ rq==1.16.2
 pydantic==2.9.2
 ccxt==4.4.41
 psycopg2-binary==2.9.9
+ccxt
