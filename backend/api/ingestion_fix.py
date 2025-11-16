@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Query
+﻿from fastapi import APIRouter, Query
 
 router = APIRouter(prefix="/api/ingestion", tags=["ingestion-fix"])
 
@@ -7,9 +7,9 @@ _DUMMY = [
     "ADA/USDT","DOGE/USDT","TRX/USDT","MATIC/USDT","DOT/USDT"
 ]
 
-def _try_load_symbols_from_binance(top: int):
+def _try_load_symbols(top: int):
     try:
-        import ccxt  # lazy import (server boot par crash na ho)
+        import ccxt
         ex = ccxt.binance({"enableRateLimit": True, "options": {"adjustForTimeDifference": True}})
         ex.load_markets()
         tickers = ex.fetch_tickers()
@@ -26,18 +26,22 @@ def _try_load_symbols_from_binance(top: int):
                 vol = 0.0
             rows.append((sym, vol))
         rows.sort(key=lambda x: x[1], reverse=True)
-        return [s for (s, _) in rows[:max(1, min(top, 200))]]
+        return [s for (s, _) in rows[:max(1, min(top, 500))]]
     except Exception:
-        return None  # fallback to dummy
+        return None
 
 @router.get("/scan")
-def scan(segment: str = Query("volume"), top: int = Query(25, ge=1, le=200)):
-    syms = _try_load_symbols_from_binance(top)
-    if not syms:
-        syms = _DUMMY[:top]
+def scan(segment: str = Query("volume"), top: int = Query(25, ge=1, le=500)):
+    syms = _try_load_symbols(top) or _DUMMY[:top]
     return {"segment": segment, "count": len(syms), "symbols": syms}
 
+@router.get("/symbols")
+def symbols(segment: str = Query("volume"), top: int = Query(50, ge=1, le=500)):
+    syms = _try_load_symbols(top) or _DUMMY[:top]
+    return {"ok": True, "segment": segment, "symbols": syms}
+
+# >>> UI mostly calls this:
 @router.get("/symbols_clean")
-def symbols_clean(segment: str = Query("volume"), top: int = Query(50, ge=1, le=200)):
-    out = scan(segment=segment, top=top)
-    return {"ok": True, "segment": out["segment"], "symbols": out["symbols"]}
+def symbols_clean(segment: str = Query("volume"), top: int = Query(100, ge=1, le=500)):
+    syms = _try_load_symbols(top) or _DUMMY[:top]
+    return {"ok": True, "segment": segment, "symbols": syms}

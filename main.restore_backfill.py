@@ -57,8 +57,3 @@ async def run_ingestion(req: IngestionRequest):
             j = q.enqueue("workers.backfill_range_job", s, tf, req.start_ts, req.end_ts, job_timeout=3600)
             jobs.append(j.id)
     return {"ok": True, "queued": True, "jobs": jobs, "count": len(jobs)}
-from api.ingestion_fix import router as ingestion_fix_router
-app.include_router(ingestion_fix_router)
-
-from api.status_active_override import router as status_active_router
-app.include_router(status_active_router)
