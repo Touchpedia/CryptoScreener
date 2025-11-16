@@ -1,0 +1,1 @@
+{"root":["./src/global.d.ts","./src/main.tsx","./src/components/IngestionPanel.tsx","./src/components/StatusBoard.tsx","./src/components/StatusCard.tsx","./src/lib/api.ts"],"errors":true,"version":"5.9.3"}

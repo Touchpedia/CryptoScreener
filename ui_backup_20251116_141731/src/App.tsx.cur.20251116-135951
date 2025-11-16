@@ -1,0 +1,58 @@
+﻿import React, { useState, Suspense } from "react";
+
+const LazySymbols = React.lazy(() => import("./pages/SymbolsLoader"));
+
+function useExt() {
+  try {
+    const sp = new URLSearchParams(window.location.search);
+    return (sp.get("ext") || "").toLowerCase();
+  } catch { return ""; }
+}
+
+export default function App() {
+  const [ping, setPing] = useState<string>("(not checked)");
+  const ext = useExt();
+
+  async function pingApi() {
+    try {
+      const res = await fetch("/api/report/coverage?t=" + Date.now(), { cache: "no-store" });
+      if (!res.ok) throw new Error("HTTP " + (res?.status ?? 0));
+      const data = await res.json();
+      const count = Array.isArray(data) ? data.length : (Array.isArray(data?.rows) ? data.rows.length : 0);
+      setPing(`OK • rows=${count}`);
+    } catch (e:any) {
+      setPing("ERR • " + (e?.message ?? "failed"));
+      console.error(e);
+    }
+  }
+
+  if (ext === "symbols") {
+    return (
+      <Suspense fallback={<div style={{padding:16}}>Loading extension…</div>}>
+        <LazySymbols />
+      </Suspense>
+    );
+  }
+
+  return (
+    <div style={{ fontFamily: "Inter, system-ui, Arial, sans-serif", padding: 16 }}>
+      <h2 style={{ marginBottom: 8 }}>CryptoScreener — Main UI</h2>
+      <div style={{ color: "#374151", marginBottom: 14, fontSize: 13 }}>
+        Ye main page hai. Test extensions ke liye URL me <code>?ext=symbols</code> lagayein.
+      </div>
+
+      <div style={{ border: "1px solid #e5e7eb", borderRadius: 10, padding: 12, marginBottom: 12 }}>
+        <h3 style={{ marginTop: 0 }}>Diagnostics</h3>
+        <button onClick={pingApi} style={{ padding: "6px 10px", border: "1px solid #d1d5db", borderRadius: 6, cursor: "pointer" }}>
+          Ping /api/report/coverage
+        </button>
+        <span style={{ marginLeft: 12, fontSize: 12, color: "#6b7280" }}>Status: {ping}</span>
+      </div>
+
+      <div style={{ fontSize: 12, color: "#6b7280" }}>
+        Symbols Loader extension dekhne ke liye: <code>http://localhost:5173/?ext=symbols</code>
+      </div>
+    </div>
+  );
+}
+

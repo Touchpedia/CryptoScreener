@@ -1,0 +1,208 @@
+import { useEffect, useState } from "react";
+import { runIngestion, getStatus } from "../lib/api";
+
+type TaskRow = { timeframe: string; days: string };
+
+const DEFAULT_TASKS: TaskRow[] = [
+  { timeframe: "1m", days: "7" },
+  { timeframe: "3m", days: "14" },
+  { timeframe: "5m", days: "30" },
+];
+
+const MINUTES_PER_CANDLE: Record<string, number> = {
+  "1m": 1,
+  "3m": 3,
+  "5m": 5,
+  "15m": 15,
+  "1h": 60,
+  "4h": 240,
+  "1d": 1440,
+};
+
+function computeCandleInfo(timeframe: string, daysValue: string) {
+  const minutesPerCandle = MINUTES_PER_CANDLE[timeframe];
+  const days = Number(daysValue);
+  if (!minutesPerCandle || !Number.isFinite(days) || days <= 0) {
+    return null;
+  }
+  const totalCandles = Math.ceil((days * 24 * 60) / minutesPerCandle);
+  const now = new Date();
+  const start = new Date(now.getTime() - days * 24 * 60 * 60 * 1000);
+  const formatUtc = (d: Date) =>
+    d.toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC");
+  return {
+    totalCandles,
+    startIso: formatUtc(start),
+    endIso: formatUtc(now),
+    startMs: start.getTime(),
+    endMs: now.getTime(),
+  };
+}
+
+export default function IngestionPanel() {
+  const [symbols, setSymbols] = useState<string>("BTC/USDT,ETH/USDT");
+  const [tasks, setTasks] = useState<TaskRow[]>(DEFAULT_TASKS);
+  const [runId, setRunId] = useState<string | null>(null);
+  const [message, setMessage] = useState<string>("");
+  const [percent, setPercent] = useState<number>(0);
+
+  const updateTask = (index: number, patch: Partial<TaskRow>) => {
+    setTasks((prev) =>
+      prev.map((row, i) => (i === index ? { ...row, ...patch } : row)),
+    );
+  };
+
+  const addTask = () =>
+    setTasks((prev) => [...prev, { timeframe: "15m", days: "7" }]);
+
+  const removeTask = (index: number) =>
+    setTasks((prev) => prev.filter((_, i) => i !== index));
+
+  const buildPayload = () => {
+    const symbolList = symbols
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    const taskPayload = tasks
+      .map((row) => {
+        const timeframe = row.timeframe.trim();
+        const info = computeCandleInfo(timeframe, row.days);
+        return info
+          ? {
+              timeframe,
+              candles_per_symbol: info.totalCandles,
+            }
+          : null;
+      })
+      .filter(
+        (
+          row,
+        ): row is {
+          timeframe: string;
+          candles_per_symbol: number;
+        } => Boolean(row),
+      );
+
+    if (!symbolList.length) {
+      throw new Error("Please provide at least one symbol.");
+    }
+    if (!taskPayload.length) {
+      throw new Error("Please add at least one timeframe with days.");
+    }
+    return { symbols: symbolList, tasks: taskPayload };
+  };
+
+  async function handleStart() {
+    try {
+      const payload = buildPayload();
+      const res = await runIngestion(payload);
+      const rid = (res && (res.run_id || res.runId)) ?? null;
+      setRunId(rid);
+      setMessage(res?.message ?? "Ingestion started");
+    } catch (error) {
+      setMessage(
+        error instanceof Error ? error.message : "Failed to start ingestion",
+      );
+    }
+  }
+
+  useEffect(() => {
+    if (!runId) return;
+    const id = setInterval(async () => {
+      try {
+        const status = await getStatus();
+        if (status?.run?.run_id === runId) {
+          const pct = Number(status.run.percent ?? 0);
+          setPercent(Number.isFinite(pct) ? pct : 0);
+        }
+      } catch {
+        /* ignore polling errors */
+      }
+    }, 1500);
+    return () => clearInterval(id);
+  }, [runId]);
+
+  return (
+    <div className="p-4 border rounded-xl space-y-4">
+      <div className="flex gap-2 items-start flex-wrap">
+        <input
+          className="border p-2 flex-1 min-w-[240px]"
+          value={symbols}
+          onChange={(e) => setSymbols(e.target.value)}
+          placeholder="BTC/USDT,ETH/USDT"
+        />
+        <button className="px-4 py-2 rounded-lg border" onClick={addTask}>
+          + Add TF
+        </button>
+        <button
+          className="px-4 py-2 rounded-lg border bg-blue-500 text-white"
+          onClick={handleStart}
+        >
+          Start Ingestion
+        </button>
+      </div>
+
+      <div className="space-y-3">
+        {tasks.map((row, index) => {
+          const info = computeCandleInfo(row.timeframe, row.days);
+          return (
+            <div key={index} className="space-y-1">
+              <div className="flex gap-2 flex-wrap items-center">
+                <select
+                  value={row.timeframe}
+                  onChange={(e) =>
+                    updateTask(index, { timeframe: e.target.value })
+                  }
+                  className="border rounded px-2 py-1"
+                >
+                  {["1m", "3m", "5m", "15m", "1h", "4h", "1d"].map((tf) => (
+                    <option key={tf} value={tf}>
+                      {tf}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="number"
+                  min="1"
+                  value={row.days}
+                  onChange={(e) => updateTask(index, { days: e.target.value })}
+                  className="border rounded px-2 py-1 w-32"
+                  placeholder="Days"
+                />
+                <button
+                  className="px-2 py-1 border rounded"
+                  onClick={() => removeTask(index)}
+                  disabled={tasks.length === 1}
+                >
+                  Remove
+                </button>
+              </div>
+              <div className="text-xs text-gray-600">
+                {info ? (
+                  <>
+                    Last {Number(row.days)} days {"->"}{" "}
+                    {info.totalCandles.toLocaleString()} candles ({info.startIso} {"->"}{" "}
+                    {info.endIso})
+                  </>
+                ) : (
+                  <span className="text-red-500">
+                    Enter a positive number of days to see required candles and
+                    date range.
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {message && <div className="text-sm">{message}</div>}
+      {runId && (
+        <div className="text-sm">
+          Run: <span className="font-mono">{runId}</span> - Progress: {percent}%
+        </div>
+      )}
+    </div>
+  );
+}

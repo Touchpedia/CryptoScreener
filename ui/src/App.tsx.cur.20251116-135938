@@ -1,0 +1,52 @@
+﻿import React, { useState, Suspense } from "react";
+
+const SymbolsExt = React.lazy(() => import("./pages/SymbolsLoader"));
+
+function useExt() {
+  try {
+    const sp = new URLSearchParams(window.location.search);
+    return (sp.get("ext") || "").toLowerCase().trim();
+  } catch { return ""; }
+}
+
+export default function App() {
+  const [ping, setPing] = useState<string>("(not checked)");
+  const ext = useExt();
+
+  async function pingApi() {
+    try {
+      const r = await fetch("/api/status?t=" + Date.now(), { cache: "no-store" });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      setPing("OK");
+    } catch (e:any) {
+      setPing("ERR: " + (e?.message ?? "failed"));
+    }
+  }
+
+  if (ext === "symbols") {
+    return (
+      <Suspense fallback={<div style={{padding:16}}>Loading extension…</div>}>
+        <SymbolsExt />
+      </Suspense>
+    );
+  }
+
+  return (
+    <div style={{ fontFamily: "Inter, system-ui, Arial, sans-serif", padding: 16 }}>
+      <h2 style={{ marginTop: 0 }}>CryptoScreener — Main UI</h2>
+      <p style={{ color: "#555", marginTop: 0 }}>Ye default dashboard hai. Test extensions kabhi bhi yahan replace nahi hongi.</p>
+
+      <div style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: 12, marginBottom: 12 }}>
+        <button onClick={pingApi} style={{ padding: "6px 10px", border: "1px solid #d1d5db", borderRadius: 6, cursor: "pointer" }}>
+          Ping /api/status
+        </button>
+        <span style={{ marginLeft: 10, fontSize: 12, color: "#6b7280" }}>Status: {ping}</span>
+      </div>
+
+      <div style={{ fontSize: 12, color: "#6b7280" }}>
+        Symbols Loader dekhne ke liye URL par <code>?ext=symbols</code> add karein.
+      </div>
+    </div>
+  );
+}
+

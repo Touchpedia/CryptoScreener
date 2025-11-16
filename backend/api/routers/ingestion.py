@@ -1,4 +1,4 @@
-﻿from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query
 import os, time
 from typing import List
 
@@ -64,7 +64,7 @@ def _load_symbols(segment: str) -> List[str]:
     return symbols
 
 @router.get("/symbols")
-def symbols(segment: str = Query("all"), limit: int = Query(50, ge=1, le=500)):
+def symbols(segment: str = Query("all"), limit: int = Query(50, ge=1, le=2000)):
     seg = segment.lower()
     if seg not in {"all","market_cap","volume","gainers","losers"}:
         seg = "all"
