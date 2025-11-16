@@ -10,3 +10,10 @@ if __name__ == "__main__":
 
 from api.routers.ingestion import router as ingestion_router
 app.include_router(ingestion_router)
+
+from api.ingestion_scan_shim import router as ingestion_scan_router
+app.include_router(ingestion_scan_router)
+
+from api.ingestion_symbols_shim import router as ingestion_symbols_router
+app.include_router(ingestion_symbols_router)
+\nfrom api.ingestion_fix import router as ingestion_fix_router\napp.include_router(ingestion_fix_router)\n

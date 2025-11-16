@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from api.ingestion import ingestion
+from api.ingestion import router as ingestion
 
 router = APIRouter(prefix="/api")
 router.include_router(ingestion)
