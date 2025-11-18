@@ -1,6 +1,6 @@
 import time, ccxt, psycopg2
 
-HOST, PORT, USER, PASS, DB = "127.0.0.1", 5434, "postgres", "2715", "candles"
+HOST, PORT, USER, PASS, DB = "127.0.0.1", 5432, "postgres", "2715", "candles"
 SYMBOLS = ["BTC/USDT","ETH/USDT","BNB/USDT","SOL/USDT","XRP/USDT"]
 TF = "1m"
 

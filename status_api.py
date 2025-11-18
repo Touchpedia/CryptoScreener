@@ -1,4 +1,4 @@
-﻿import datetime as dt
+import datetime as dt
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import psycopg2, os
@@ -14,8 +14,8 @@ app.add_middleware(
 )
 DB = dict(
     host=os.getenv("PGHOST","127.0.0.1"),
-    port=os.getenv("PGPORT","5433"),
-    dbname=os.getenv("PGDATABASE","csb_opt"),
+    port=os.getenv("PGPORT","5432"),
+    dbname=os.getenv("PGDATABASE","candles"),
     user=os.getenv("PGUSER","postgres"),
     password=os.getenv("PGPASSWORD","2715")
 )
@@ -45,15 +45,15 @@ def health():
     from psycopg2.extras import RealDictCursor
     DB = dict(
         host=os.getenv("PGHOST","127.0.0.1"),
-        port=os.getenv("PGPORT","5433"),
-        dbname=os.getenv("PGDATABASE","csb_opt"),
+        port=os.getenv("PGPORT","5432"),
+        dbname=os.getenv("PGDATABASE","candles"),
         user=os.getenv("PGUSER","postgres"),
         password=os.getenv("PGPASSWORD","2715"),
     )
     with psycopg2.connect(**DB, cursor_factory=RealDictCursor) as conn:
         cur = conn.cursor()
-        cur.execute("SELECT max(ts) AS latest FROM candles_1m WHERE symbol='BTC/USDT'")
-        latest = cur.fetchone()["latest"]
+        cur.execute("SELECT to_timestamp(max(ts)/1000) AS latest FROM candles WHERE symbol='BTC/USDT'")
+        latest = cur.fetchone()["latest"]; latest = datetime.datetime.utcfromtimestamp(latest/1000).replace(tzinfo=datetime.timezone.utc); latest = datetime.datetime.utcfromtimestamp(latest/1000).replace(tzinfo=datetime.timezone.utc)
     import time, datetime
     if latest is None:
         return {"ok": False, "reason": "no data"}
@@ -98,7 +98,7 @@ def _iso_utc(ts_ms: int) -> str:
 
 def _upsert_batch(conn, rows):
     sql = """
-    INSERT INTO candles_1m (ts, symbol, open, high, low, close, volume)
+    INSERT INTO candles (ts, symbol, open, high, low, close, volume)
     VALUES %s
     ON CONFLICT (symbol, ts) DO UPDATE
     SET open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low,
@@ -252,9 +252,9 @@ def admin_flush(body: FlushBody):
         return {"ok": False, "error": "unauthorized"}
     with psycopg2.connect(**DB) as conn:
         cur = conn.cursor()
-        cur.execute("TRUNCATE TABLE candles_1m;")
+        cur.execute("TRUNCATE TABLE candles;")
         conn.commit()
-    return {"ok": True, "message": "candles_1m truncated"}
+    return {"ok": True, "message": "candles truncated"}
 
 class ReportBody(BaseModel):
     start_iso: str = Field(..., description="e.g. 2025-10-17T00:00:00Z")
@@ -288,7 +288,7 @@ def report(body: ReportBody):
             cur.execute(
                 """
                 SELECT COUNT(*) 
-                FROM candles_1m 
+                FROM candles 
                 WHERE symbol=%s AND ts >= %s AND ts <= %s
                 """,
                 (sym, start, end),
@@ -299,7 +299,7 @@ def report(body: ReportBody):
             cur.execute(
                 """
                 SELECT close 
-                FROM candles_1m 
+                FROM candles 
                 WHERE symbol=%s 
                 ORDER BY ts DESC 
                 LIMIT 1
@@ -326,4 +326,25 @@ def report(body: ReportBody):
 
 
 # Fallback DB config (override via env/.env in your app)
-DB = dict(host='localhost', port=5432, dbname='postgres', user='postgres', password='postgres')
+DB = dict(host='localhost', port=5432, dbname='candles', user='postgres', password='2715')
+@app.get("/health")
+def health():
+    import os, datetime, psycopg2
+    from psycopg2.extras import RealDictCursor
+    DB = dict(
+        host=os.getenv("PGHOST","127.0.0.1"),
+        port=int(os.getenv("PGPORT","5432")),
+        dbname=os.getenv("PGDATABASE","candles"),
+        user=os.getenv("PGUSER","postgres"),
+        password=os.getenv("PGPASSWORD","2715"),
+    )
+    with psycopg2.connect(**DB, cursor_factory=RealDictCursor) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT max(ts) AS latest FROM candles WHERE symbol='BTC/USDT'")
+        row = cur.fetchone()
+        latest = row["latest"]
+    if latest is None:
+        return {"ok": False, "reason": "no data"}
+    latest_dt = datetime.datetime.utcfromtimestamp(latest/1000).replace(tzinfo=datetime.timezone.utc)
+    lag = int((datetime.datetime.now(datetime.timezone.utc) - latest_dt).total_seconds())
+    return {"ok": lag <= 120, "lag_seconds": lag, "latest_ts": latest_dt.isoformat()}

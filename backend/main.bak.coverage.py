@@ -1,7 +1,7 @@
 ﻿from __future__ import annotations
 import os
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Optional, TYPE_CHECKING, Any
 
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
@@ -18,15 +18,30 @@ try:
 except Exception:
     pass
 
-# DB
-import psycopg2
+# DB (optional dependency)
+# Import in a way that keeps type-checkers happy even when psycopg2 is not installed locally.
+try:
+    import psycopg2  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover - optional dependency
+    psycopg2 = None  # type: ignore
+
+if TYPE_CHECKING:  # pragma: no cover - used only for type checkers
+    from psycopg2.extensions import connection as _PGConnection  # type: ignore
+else:
+    _PGConnection = Any  # type: ignore
+
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:secret@postgres:5432/candles")
 
 def db_rows(sql: str, params: tuple):
+    if psycopg2 is None:
+        raise RuntimeError("psycopg2 is required to query the database.")
+
     rows = []
     with psycopg2.connect(DATABASE_URL) as conn:
         with conn.cursor() as cur:
             cur.execute(sql, params)
+            if cur.description is None:
+                return []
             cols = [d[0] for d in cur.description]
             for r in cur.fetchall():
                 rows.append({cols[i]: r[i] for i in range(len(cols))})
@@ -58,13 +73,18 @@ class IngestionRequest(BaseModel):
 
 @app.post("/api/ingestion/run")
 def run_ingestion(req: IngestionRequest):
-    if not req.symbols or not req.timeframes:
+    symbols = list(req.symbols or [])
+    timeframes = list(req.timeframes or [])
+
+    if not symbols:
+        raise HTTPException(status_code=400, detail="symbols/timeframes required")
+    if not timeframes:
         raise HTTPException(status_code=400, detail="symbols/timeframes required")
     if q is None:
         return {"ok": True, "queued": False, "jobs": [], "count": 0}
     jobs = []
-    for s in req.symbols:
-        for tf in req.timeframes:
+    for s in symbols:
+        for tf in timeframes:
             j = q.enqueue("workers.backfill_range_job", s, tf, req.start_ts, req.end_ts, job_timeout=3600)
             jobs.append(j.id)
     return {"ok": True, "queued": True, "jobs": jobs, "count": len(jobs)}

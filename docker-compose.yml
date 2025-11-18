@@ -1,4 +1,4 @@
-﻿services:
+services:
   postgres:
     image: timescale/timescaledb:latest-pg16
     container_name: cs_postgres
@@ -40,7 +40,7 @@
         condition: service_healthy
       redis:
         condition: service_healthy
-    # FIX: uvicorn main:app (na ke backend.main:app)
+    # FIX: uvicorn main:app (na ke main:app)
     command: ["sh","-c","uvicorn main:app --host $${UVICORN_HOST:-0.0.0.0} --port $${UVICORN_PORT:-8000}"]
     ports: ["8000:8000"]
     volumes:
@@ -50,7 +50,6 @@
     build:
       context: ./backend
       dockerfile: Dockerfile
-    container_name: cs_worker
     env_file: ./.env.compose
     depends_on:
       backend:
